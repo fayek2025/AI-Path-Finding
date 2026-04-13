@@ -1,0 +1,83 @@
+[
+  {
+    "algorithm": "BFS",
+    "path_cost": 121663.5549,
+    "hop_count": 1,
+    "nodes_expanded": 1,
+    "path": [
+      1,
+      4
+    ]
+  },
+  {
+    "algorithm": "DFS",
+    "path_cost": 121663.5549,
+    "hop_count": 1,
+    "nodes_expanded": 2,
+    "path": [
+      1,
+      4
+    ]
+  },
+  {
+    "algorithm": "IDS",
+    "path_cost": 121663.5549,
+    "hop_count": 1,
+    "nodes_expanded": 4,
+    "path": [
+      1,
+      4
+    ]
+  },
+  {
+    "algorithm": "UCS",
+    "path_cost": 55949.6702,
+    "hop_count": 2,
+    "nodes_expanded": 4,
+    "path": [
+      1,
+      3,
+      4
+    ]
+  },
+  {
+    "algorithm": "A*",
+    "path_cost": 55949.6702,
+    "hop_count": 2,
+    "nodes_expanded": 4,
+    "path": [
+      1,
+      3,
+      4
+    ]
+  },
+  {
+    "algorithm": "Greedy",
+    "path_cost": 121663.5549,
+    "hop_count": 1,
+    "nodes_expanded": 2,
+    "path": [
+      1,
+      4
+    ]
+  },
+  {
+    "algorithm": "IDA*",
+    "path_cost": 55949.6702,
+    "hop_count": 2,
+    "nodes_expanded": 15,
+    "path": [
+      1,
+      3,
+      4
+    ]
+  },
+  {
+    "algorithm": "Bidirectional A*",
+    "path_cost": null,
+    "hop_count": 0,
+    "nodes_expanded": 0,
+    "path": [],
+    "error": "3"
+  }
+]
