@@ -53,13 +53,11 @@ NAMED_LOCATIONS = {
 
 # ── Step 1: Collect all nodes in one map session ──────────────────────────────
 
-def collect_nodes_from_map() -> list:
+def collect_nodes_from_map(osm_G: nx.MultiDiGraph) -> list:
     """
     Open a single Leaflet map. User clicks to place nodes one by one.
-    Each click snaps to the nearest OSM road node (via Nominatim reverse geocode).
-    Returns list of dicts: [{id, lat, lon, label}, ...]
-    First node = START, last node = GOAL, rest = intermediate.
-    Minimum 2 nodes required.
+    Each click is snapped to the nearest real OSM node ID.
+    Returns list of dicts: [{id (OSM node ID), lat, lon, label}, ...]
     """
     state  = {'nodes': [], 'done': False}
     lock   = threading.Event()
@@ -90,13 +88,33 @@ def collect_nodes_from_map() -> list:
 
             if action == 'add_node':
                 lat, lon = body['lat'], body['lon']
-                idx = len(state['nodes'])
-                node_id = idx + 1
-                state['nodes'].append({
-                    'id': node_id, 'lat': lat, 'lon': lon,
-                    'label': body.get('label', f'N{node_id}')
-                })
-                resp = {'node_id': node_id, 'total': len(state['nodes'])}
+                # Snap to nearest real OSM node
+                try:
+                    osm_id = ox.distance.nearest_nodes(osm_G, X=lon, Y=lat)
+                except Exception:
+                    from heuristic import haversine_coords
+                    osm_id = min(osm_G.nodes,
+                                 key=lambda n: haversine_coords(
+                                     lat, lon,
+                                     osm_G.nodes[n]['y'],
+                                     osm_G.nodes[n]['x']))
+                # Use actual OSM coordinates of the snapped node
+                snapped_lat = osm_G.nodes[osm_id]['y']
+                snapped_lon = osm_G.nodes[osm_id]['x']
+                # Avoid duplicate nodes
+                if any(n['id'] == osm_id for n in state['nodes']):
+                    resp = {'node_id': osm_id, 'total': len(state['nodes']),
+                            'duplicate': True,
+                            'node_lat': snapped_lat, 'node_lon': snapped_lon}
+                else:
+                    state['nodes'].append({
+                        'id': osm_id,
+                        'lat': snapped_lat,
+                        'lon': snapped_lon,
+                        'label': f'N{len(state["nodes"]) + 1}'
+                    })
+                    resp = {'node_id': osm_id, 'total': len(state['nodes']),
+                            'node_lat': snapped_lat, 'node_lon': snapped_lon}
 
             elif action == 'remove_last':
                 if state['nodes']:
@@ -280,12 +298,18 @@ function refreshMarkers(nodes) {{
 
 map.on('click', function(e) {{
   var lat = e.latlng.lat, lon = e.latlng.lng;
+  document.getElementById('status').innerText = 'Snapping to nearest road node...';
   fetch('http://localhost:{port}', {{
     method:'POST', headers:{{'Content-Type':'application/json'}},
     body: JSON.stringify({{action:'add_node', lat:lat, lon:lon}})
   }})
   .then(r=>r.json())
   .then(function(d) {{
+    if (d.duplicate) {{
+      document.getElementById('status').innerText = '⚠ That node is already selected. Try a different location.';
+      return;
+    }}
+    // Show snapped position, not raw click
     fetch('http://localhost:{port}', {{
       method:'POST', headers:{{'Content-Type':'application/json'}},
       body: JSON.stringify({{action:'get_nodes'}})
@@ -365,12 +389,22 @@ document.addEventListener('click',function(e) {{
 
 def build_custom_graph(nodes: list, seed: int = 42) -> nx.MultiDiGraph:
     """
-    Build a fully-connected directed graph from the user-placed nodes.
-    Uses MultiDiGraph so edge access G[u][v].values() works the same
-    as in all algorithm implementations.
+    Complete directed graph — every node connects to every other node.
+
+    Why complete graph is correct for this AI course demo:
+    - BFS/DFS/IDS ignore weights → take the direct 1-hop start→goal edge
+    - UCS/A* use weights → find cheapest path, which goes through intermediates
+      because the direct start→goal edge is deliberately expensive
+    - This produces genuinely different paths AND costs across algorithms
+
+    The direct start→goal edge gets worst-case metrics (max traffic, max pothole,
+    min safety) to model: "the direct road is congested/unsafe."
+    All other edges get normal random metrics.
     """
-    rng = random.Random(seed)
-    G = nx.MultiDiGraph()
+    rng      = random.Random(seed)
+    G        = nx.MultiDiGraph()
+    start_id = nodes[0]['id']
+    goal_id  = nodes[-1]['id']
 
     for n in nodes:
         G.add_node(n['id'], y=n['lat'], x=n['lon'], label=n['label'])
@@ -379,130 +413,621 @@ def build_custom_graph(nodes: list, seed: int = 42) -> nx.MultiDiGraph:
         for b in nodes:
             if a['id'] == b['id']:
                 continue
-            dist    = haversine_coords(a['lat'], a['lon'], b['lat'], b['lon'])
-            traffic = rng.uniform(1.0, 4.0)
-            safety  = max(rng.uniform(0.5, 1.0), 0.1)
-            pothole = rng.uniform(1.0, 3.0)
-            weight  = (dist * traffic * pothole) / safety
-            G.add_edge(a['id'], b['id'],
-                       length=dist,
-                       traffic_factor=traffic,
-                       safety_factor=safety,
-                       pothole_factor=pothole,
-                       custom_weight=weight)
+            dist_km = haversine_coords(a['lat'], a['lon'],
+                                       b['lat'], b['lon']) / 1000.0
+            # Direct start→goal: deliberately expensive so weighted algorithms
+            # prefer going through intermediate nodes
+            if a['id'] == start_id and b['id'] == goal_id:
+                traffic = 2.4
+                safety  = 0.62
+                pothole = 1.95
+            else:
+                traffic = rng.uniform(1.0, 2.0)
+                safety  = rng.uniform(0.7, 1.0)
+                pothole = rng.uniform(1.0, 1.6)
 
-    print(f"  Custom graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+            weight = (dist_km * traffic * pothole) / safety
+            G.add_edge(a['id'], b['id'],
+                       length=round(dist_km, 4),
+                       traffic_factor=round(traffic, 3),
+                       safety_factor=round(safety, 3),
+                       pothole_factor=round(pothole, 3),
+                       custom_weight=round(weight, 4))
+
+    print(f"  Complete graph: {G.number_of_nodes()} nodes, "
+          f"{G.number_of_edges()} edges  "
+          f"(direct start→goal edge is high-cost, seed={seed})")
     return G
+
+
+# ── Node name lookup ──────────────────────────────────────────────────────────
+
+def _get_node_name(nid: int, lat: float, lon: float) -> str:
+    """
+    Reverse-geocode a node to get its street/place name via Nominatim.
+    Returns a short name (road name or neighbourhood).
+    Falls back to coordinates if geocoding fails.
+    """
+    import urllib.request, urllib.parse
+    try:
+        url = (
+            "https://nominatim.openstreetmap.org/reverse"
+            f"?lat={lat}&lon={lon}&format=json&zoom=17&addressdetails=1"
+        )
+        req = urllib.request.Request(url, headers={'User-Agent': 'ai-pathfinding/1.0'})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read())
+        addr = data.get('address', {})
+        # Try progressively broader name fields
+        name = (addr.get('road') or addr.get('pedestrian') or
+                addr.get('neighbourhood') or addr.get('suburb') or
+                addr.get('quarter') or data.get('display_name', '').split(',')[0])
+        return name.strip()[:30]   # cap length for readability
+    except Exception:
+        return f"{lat:.4f},{lon:.4f}"
+
+
+def _geocode_all_nodes(G: nx.MultiDiGraph, chosen_nodes: list) -> dict:
+    """
+    Reverse-geocode every node in G.
+    Chosen nodes get their label prepended (e.g. 'START: Nilkhet Rd').
+    Intermediate nodes get just the street name.
+    Returns {node_id: display_name}.
+    """
+    import time
+    chosen_ids = {n['id']: n['label'] for n in chosen_nodes}
+    names = {}
+    total = G.number_of_nodes()
+    print(f"  Geocoding {total} nodes (this may take ~{total//5}s)...", end='', flush=True)
+
+    for i, (nid, data) in enumerate(G.nodes(data=True)):
+        lat = data.get('y', 0)
+        lon = data.get('x', 0)
+        name = _get_node_name(nid, lat, lon)
+        if nid in chosen_ids:
+            names[nid] = f"{chosen_ids[nid]}: {name}"
+        else:
+            names[nid] = name
+        if (i + 1) % 10 == 0:
+            print('.', end='', flush=True)
+        time.sleep(0.15)   # Nominatim rate limit: max 1 req/s
+
+    print(' done.')
+    return names
 
 
 # ── Step 3: Visualize graph + paths with matplotlib ──────────────────────────
 
-def visualize_matplotlib(G: nx.MultiDiGraph, records: list, nodes: list,
-                         start: int, goal: int) -> None:
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+def build_dashboard(G: nx.MultiDiGraph, records: list, nodes: list,
+                    start: int, goal: int, node_names: dict) -> None:
     """
-    Draw the custom graph with all algorithm paths overlaid using matplotlib.
-    Nodes are positioned by their real lat/lon coordinates.
+    Build a full-screen dashboard served via localhost so OSM tiles load correctly.
+    Layout:
+      - Full-screen Leaflet map (left ~60%) — Google Maps-style zoom/pan
+      - Slide-out right panel with comparison table + bar charts + node info
+      - Toggle button to show/hide the panel
     """
-    pos = {n['id']: (n['lon'], n['lat']) for n in nodes}
-    labels = {n['id']: n['label'] for n in nodes}
+    import plotly.graph_objects as go
+    import plotly.io as pio
 
-    valid = [r for r in records if r['path'] and len(r['path']) > 1]
+    pos = {nid: (d['x'], d['y']) for nid, d in G.nodes(data=True)
+           if 'x' in d and 'y' in d}
+    chosen_map = {n['id']: n for n in nodes}
+    valid      = [r for r in records if r['path'] and len(r['path']) > 1]
+    optimal_set = {'UCS', 'A*', 'IDA*', 'Bidirectional A*'}
+    best_cost   = min((r['path_cost'] for r in records if r.get('path_cost')), default=None)
 
-    fig, ax = plt.subplots(figsize=(12, 9))
-    ax.set_facecolor('#f8f9fa')
-    fig.patch.set_facecolor('#f8f9fa')
+    center_lat = sum(n['lat'] for n in nodes) / len(nodes)
+    center_lon = sum(n['lon'] for n in nodes) / len(nodes)
 
-    # Draw all edges (light grey)
-    for u, v in G.edges():
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
-        ax.annotate('', xy=(x1, y1), xytext=(x0, y0),
-                    arrowprops=dict(arrowstyle='->', color='#cccccc',
-                                   lw=1.0, connectionstyle='arc3,rad=0.05'))
+    # ── Leaflet GeoJSON data ──────────────────────────────────────────────────
+    # Road network edges
+    road_features = []
+    for u, v, data in G.edges(data=True):
+        if u not in pos or v not in pos:
+            continue
+        road_features.append({
+            "type": "Feature",
+            "geometry": {"type": "LineString",
+                         "coordinates": [[pos[u][0], pos[u][1]],
+                                         [pos[v][0], pos[v][1]]]},
+            "properties": {
+                "highway": data.get('highway_type', ''),
+                "congested": data.get('congested', False),
+            }
+        })
 
-    # Draw each algorithm path
+    # Algorithm paths
+    path_features = {}
     for record in valid:
         path  = record['path']
-        color = COLORS.get(record['algorithm'], 'gray')
+        color = COLORS.get(record['algorithm'], '#999')
+        coords = []
         for i in range(len(path) - 1):
-            x0, y0 = pos[path[i]]
-            x1, y1 = pos[path[i + 1]]
-            ax.annotate('', xy=(x1, y1), xytext=(x0, y0),
-                        arrowprops=dict(arrowstyle='->', color=color,
-                                       lw=2.5, alpha=0.75,
-                                       connectionstyle='arc3,rad=0.08'))
+            u, v = path[i], path[i + 1]
+            if u not in pos or v not in pos:
+                continue
+            coords.append([[pos[u][0], pos[u][1]], [pos[v][0], pos[v][1]]])
+        path_features[record['algorithm']] = {
+            'color': color,
+            'coords': coords,
+            'cost': record['path_cost'],
+            'hops': record['hop_count'],
+            'expanded': record['nodes_expanded'],
+        }
 
-    # Draw nodes
+    # Intersection nodes
+    inter_nodes = []
+    for nid, (lon, lat) in pos.items():
+        if nid in chosen_map:
+            continue
+        inter_nodes.append({
+            'lat': lat, 'lon': lon,
+            'name': node_names.get(nid, f'{lat:.5f},{lon:.5f}')
+        })
+
+    # Chosen nodes
+    chosen_nodes_data = []
     for n in nodes:
         nid = n['id']
-        x, y = pos[nid]
-        if nid == start:
-            c, ec, s = '#27ae60', '#1a7a44', 220
-        elif nid == goal:
-            c, ec, s = '#e74c3c', '#a93226', 220
-        else:
-            c, ec, s = '#3498db', '#1a5276', 160
-        ax.scatter(x, y, s=s, c=c, edgecolors=ec, linewidths=2, zorder=5)
-        ax.annotate(labels[nid], (x, y),
-                    textcoords='offset points', xytext=(0, 10),
-                    ha='center', fontsize=9, fontweight='bold',
-                    bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7))
+        if nid not in pos:
+            continue
+        lon, lat = pos[nid]
+        color = '#27ae60' if nid == start else '#e74c3c' if nid == goal else '#3498db'
+        chosen_nodes_data.append({
+            'lat': lat, 'lon': lon,
+            'label': n['label'],
+            'street': node_names.get(nid, ''),
+            'color': color,
+            'isStart': nid == start,
+            'isGoal': nid == goal,
+        })
 
-    # Legend
-    legend_handles = [
-        Line2D([0], [0], color=COLORS.get(r['algorithm'], 'gray'), lw=2.5,
-               label=f"{r['algorithm']}  (cost={r['path_cost']:.0f}, "
-                     f"hops={r['hop_count']}, exp={r['nodes_expanded']})")
-        for r in valid
-    ]
-    legend_handles += [
-        Line2D([0], [0], marker='o', color='w', markerfacecolor='#27ae60',
-               markersize=10, label='START'),
-        Line2D([0], [0], marker='o', color='w', markerfacecolor='#e74c3c',
-               markersize=10, label='GOAL'),
-    ]
-    ax.legend(handles=legend_handles, loc='upper left', fontsize=8,
-              framealpha=0.95, facecolor='white')
+    # ── Bar charts (Plotly, inline) ───────────────────────────────────────────
+    def bar_html(metric_key, title, color):
+        names  = [r['algorithm'] for r in records if r.get(metric_key) is not None]
+        values = [r[metric_key]  for r in records if r.get(metric_key) is not None]
+        f = go.Figure(go.Bar(
+            x=names, y=values, marker_color=color,
+            text=[f'{v:.2f}' if isinstance(v, float) else str(v) for v in values],
+            textposition='outside',
+        ))
+        f.update_layout(
+            title=dict(text=title, font=dict(size=11)),
+            margin=dict(l=30, r=10, t=36, b=55), height=220,
+            paper_bgcolor='white', plot_bgcolor='#f8f9fa',
+            xaxis=dict(tickangle=-30, tickfont=dict(size=8)),
+            yaxis=dict(gridcolor='#e0e0e0'),
+        )
+        return pio.to_html(f, include_plotlyjs=False, full_html=False)
 
-    ax.set_title('AI Pathfinding — Custom Node Graph\n'
-                 f'{len(nodes)} nodes | All algorithm paths overlaid',
-                 fontsize=13, pad=12)
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-    plt.tight_layout()
-    plt.savefig('paths_map.png', dpi=150, bbox_inches='tight')
-    print("Graph visualization saved to paths_map.png")
-    plt.show()
+    chart_cost     = bar_html('path_cost',     'Path Cost',      '#3498db')
+    chart_hops     = bar_html('hop_count',      'Hop Count',      '#e67e22')
+    chart_expanded = bar_html('nodes_expanded', 'Nodes Expanded', '#27ae60')
+
+    # ── Table rows ────────────────────────────────────────────────────────────
+    table_rows = ''
+    for r in records:
+        found = '✓' if r.get('path_cost') else '✗'
+        cost  = f"{r['path_cost']:.2f}" if r.get('path_cost') else '—'
+        opt   = '✓' if r['algorithm'] in optimal_set else ''
+        is_best = r.get('path_cost') == best_cost and r['algorithm'] in optimal_set
+        row_cls = 'optimal' if is_best else ('nopath' if not r.get('path_cost') else '')
+        dot = f'<span class="dot" style="background:{COLORS.get(r["algorithm"],"#999")}"></span>'
+        table_rows += (
+            f'<tr class="{row_cls}">'
+            f'<td>{dot}{r["algorithm"]}</td>'
+            f'<td>{cost}</td><td>{r["hop_count"]}</td>'
+            f'<td>{r["nodes_expanded"]}</td>'
+            f'<td>{len(set(r.get("path",[])))}</td>'
+            f'<td style="color:#27ae60;font-weight:700">{opt}</td>'
+            f'<td class="{"ok" if found=="✓" else "fail"}">{found}</td>'
+            f'</tr>\n'
+        )
+
+    node_rows = ''
+    for n in nodes:
+        street = node_names.get(n['id'], '—')
+        c = '#27ae60' if n['label']=='START' else '#e74c3c' if n['label']=='GOAL' else '#3498db'
+        node_rows += (
+            f'<tr><td><b style="color:{c}">{n["label"]}</b></td>'
+            f'<td>{street}</td><td>{n["lat"]:.5f}</td>'
+            f'<td>{n["lon"]:.5f}</td></tr>\n'
+        )
+
+    # ── Serialise data for JS ─────────────────────────────────────────────────
+    road_js    = json.dumps(road_features)
+    paths_js   = json.dumps(path_features)
+    inter_js   = json.dumps(inter_nodes)
+    chosen_js  = json.dumps(chosen_nodes_data)
+    colors_js  = json.dumps(COLORS)
+
+    # ── HTML ──────────────────────────────────────────────────────────────────
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>AI Pathfinding Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* {{ box-sizing:border-box; margin:0; padding:0; }}
+html,body {{ height:100%; font-family:'Segoe UI',Arial,sans-serif; overflow:hidden; }}
+
+/* ── Header ── */
+#header {{
+  position:fixed; top:0; left:0; right:0; height:44px; z-index:2000;
+  background:linear-gradient(135deg,#1a252f,#2980b9);
+  color:white; display:flex; align-items:center; padding:0 16px;
+  gap:16px; box-shadow:0 2px 8px rgba(0,0,0,0.3);
+}}
+#header h1 {{ font-size:15px; font-weight:700; white-space:nowrap; }}
+#header .meta {{ font-size:11px; opacity:0.8; }}
+#toggle-btn {{
+  margin-left:auto; padding:6px 14px; background:rgba(255,255,255,0.15);
+  border:1px solid rgba(255,255,255,0.3); color:white; border-radius:5px;
+  cursor:pointer; font-size:12px; white-space:nowrap;
+  transition:background 0.2s;
+}}
+#toggle-btn:hover {{ background:rgba(255,255,255,0.25); }}
+
+/* ── Map ── */
+#map {{
+  position:fixed; top:44px; left:0; right:0; bottom:0; z-index:1;
+  transition:right 0.3s ease;
+}}
+#map.panel-open {{ right:420px; }}
+
+/* ── Layer control panel (path toggles) ── */
+#layer-panel {{
+  position:fixed; top:54px; left:10px; z-index:1500;
+  background:rgba(255,255,255,0.95); border-radius:8px;
+  padding:10px 14px; box-shadow:0 2px 10px rgba(0,0,0,0.2);
+  font-size:12px; min-width:160px;
+}}
+#layer-panel h4 {{ font-size:11px; color:#555; margin-bottom:8px;
+                   text-transform:uppercase; letter-spacing:0.5px; }}
+.layer-row {{ display:flex; align-items:center; gap:8px;
+              margin-bottom:5px; cursor:pointer; }}
+.layer-row:hover {{ opacity:0.75; }}
+.layer-swatch {{ width:22px; height:4px; border-radius:2px; flex-shrink:0; }}
+.layer-label {{ font-size:11px; color:#333; }}
+
+/* ── Right panel ── */
+#panel {{
+  position:fixed; top:44px; right:-420px; width:420px; bottom:0;
+  z-index:1500; background:#f4f6f8; overflow-y:auto;
+  box-shadow:-3px 0 12px rgba(0,0,0,0.15);
+  transition:right 0.3s ease;
+  border-left:1px solid #dde;
+}}
+#panel.open {{ right:0; }}
+#panel::-webkit-scrollbar {{ width:5px; }}
+#panel::-webkit-scrollbar-thumb {{ background:#ccc; border-radius:3px; }}
+
+.section {{
+  background:white; margin:10px; border-radius:8px; padding:12px;
+  box-shadow:0 1px 4px rgba(0,0,0,0.07);
+}}
+.section h2 {{
+  font-size:11px; font-weight:700; color:#2c3e50; margin-bottom:10px;
+  text-transform:uppercase; letter-spacing:0.6px;
+  border-bottom:2px solid #3498db; padding-bottom:5px;
+}}
+table {{ width:100%; border-collapse:collapse; font-size:11px; }}
+th {{ background:#2c3e50; color:white; padding:6px 8px;
+      text-align:left; font-size:10px; font-weight:600; }}
+td {{ padding:5px 8px; border-bottom:1px solid #f0f0f0; }}
+tr:hover td {{ background:#f0f7ff; }}
+tr.optimal td {{ background:#eafaf1; font-weight:600; }}
+tr.nopath td {{ color:#bbb; }}
+.dot {{ display:inline-block; width:9px; height:9px; border-radius:50%;
+        margin-right:5px; vertical-align:middle; }}
+.ok   {{ color:#27ae60; font-weight:700; }}
+.fail {{ color:#e74c3c; font-weight:700; }}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>🗺️ AI Pathfinding Dashboard</h1>
+  <div class="meta">
+    {len(nodes)} nodes · {G.number_of_nodes()} intersections ·
+    {G.number_of_edges()} road segments ·
+    {sum(1 for r in records if r.get('path_cost'))} paths found
+  </div>
+  <button id="toggle-btn" onclick="togglePanel()">☰ Analysis Panel</button>
+</div>
+
+<div id="map"></div>
+
+<!-- Layer toggles -->
+<div id="layer-panel">
+  <h4>Toggle Paths</h4>
+  <div id="layer-rows"></div>
+</div>
+
+<!-- Right panel -->
+<div id="panel">
+
+  <div class="section">
+    <h2>Algorithm Comparison</h2>
+    <table>
+      <thead><tr>
+        <th>Algorithm</th><th>Cost</th><th>Hops</th>
+        <th>Expanded</th><th>Nodes</th><th>Opt</th><th>Found</th>
+      </tr></thead>
+      <tbody>{table_rows}</tbody>
+    </table>
+    <div style="font-size:9px;color:#999;margin-top:6px;line-height:1.7">
+      Cost = Σ(km×traffic×pothole/safety) · Hops = road segments ·
+      Expanded = frontier pops · <span style="color:#27ae60">■</span> = optimal
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Path Cost</h2>{chart_cost}
+  </div>
+  <div class="section">
+    <h2>Hop Count</h2>{chart_hops}
+  </div>
+  <div class="section">
+    <h2>Nodes Expanded</h2>{chart_expanded}
+  </div>
+
+  <div class="section">
+    <h2>Chosen Nodes</h2>
+    <table>
+      <thead><tr><th>Role</th><th>Street</th><th>Lat</th><th>Lon</th></tr></thead>
+      <tbody>{node_rows}</tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+// ── Data from Python ──────────────────────────────────────────────────────────
+var ROAD_FEATURES  = {road_js};
+var PATH_FEATURES  = {paths_js};
+var INTER_NODES    = {inter_js};
+var CHOSEN_NODES   = {chosen_js};
+var COLORS         = {colors_js};
+
+// ── Map init ──────────────────────────────────────────────────────────────────
+var map = L.map('map', {{
+  center: [{center_lat}, {center_lon}],
+  zoom: 15,
+  zoomControl: true,
+}});
+
+L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19,
+}}).addTo(map);
+
+// ── Road network ──────────────────────────────────────────────────────────────
+ROAD_FEATURES.forEach(function(f) {{
+  var c = f.properties.congested ? '#e74c3c' : '#888888';
+  var w = f.properties.congested ? 2.5 : 1.2;
+  L.polyline(
+    f.geometry.coordinates.map(function(c) {{ return [c[1], c[0]]; }}),
+    {{color:c, weight:w, opacity:0.6}}
+  ).addTo(map);
+}});
+
+// ── Algorithm paths ───────────────────────────────────────────────────────────
+var pathLayers = {{}};
+var layerVisible = {{}};
+
+Object.keys(PATH_FEATURES).forEach(function(algo) {{
+  var pf = PATH_FEATURES[algo];
+  var group = L.layerGroup();
+  pf.coords.forEach(function(seg) {{
+    L.polyline(
+      seg.map(function(c) {{ return [c[1], c[0]]; }}),
+      {{color: pf.color, weight: 5, opacity: 0.85,
+        smoothFactor: 1}}
+    ).bindTooltip(
+      '<b>' + algo + '</b><br>Cost: ' + (pf.cost ? pf.cost.toFixed(2) : '—') +
+      '<br>Hops: ' + pf.hops + '<br>Expanded: ' + pf.expanded,
+      {{sticky: true}}
+    ).addTo(group);
+  }});
+  group.addTo(map);
+  pathLayers[algo] = group;
+  layerVisible[algo] = true;
+}});
+
+// ── Layer toggle UI ───────────────────────────────────────────────────────────
+var rowsDiv = document.getElementById('layer-rows');
+Object.keys(PATH_FEATURES).forEach(function(algo) {{
+  var pf = PATH_FEATURES[algo];
+  var row = document.createElement('div');
+  row.className = 'layer-row';
+  row.id = 'row-' + algo;
+  row.innerHTML =
+    '<div class="layer-swatch" style="background:' + pf.color + '"></div>' +
+    '<span class="layer-label">' + algo + '</span>';
+  row.onclick = function() {{
+    if (layerVisible[algo]) {{
+      map.removeLayer(pathLayers[algo]);
+      row.style.opacity = '0.35';
+    }} else {{
+      map.addLayer(pathLayers[algo]);
+      row.style.opacity = '1';
+    }}
+    layerVisible[algo] = !layerVisible[algo];
+  }};
+  rowsDiv.appendChild(row);
+}});
+
+// ── Intersection nodes ────────────────────────────────────────────────────────
+INTER_NODES.forEach(function(n) {{
+  L.circleMarker([n.lat, n.lon], {{
+    radius: 3, color: '#777', fillColor: '#777',
+    fillOpacity: 0.7, weight: 1,
+  }}).bindTooltip(n.name + '<br>' + n.lat.toFixed(5) + ', ' + n.lon.toFixed(5))
+    .addTo(map);
+}});
+
+// ── Chosen nodes ──────────────────────────────────────────────────────────────
+CHOSEN_NODES.forEach(function(n) {{
+  var icon = L.divIcon({{
+    className: '',
+    html: '<div style="' +
+      'background:' + n.color + ';' +
+      'width:' + (n.isStart || n.isGoal ? '18px' : '14px') + ';' +
+      'height:' + (n.isStart || n.isGoal ? '18px' : '14px') + ';' +
+      'border-radius:50%;border:3px solid white;' +
+      'box-shadow:0 0 6px rgba(0,0,0,0.4);' +
+      '"></div>',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  }});
+  L.marker([n.lat, n.lon], {{icon: icon}})
+    .bindPopup(
+      '<b style="color:' + n.color + '">' + n.label + '</b><br>' +
+      (n.street ? n.street + '<br>' : '') +
+      n.lat.toFixed(5) + ', ' + n.lon.toFixed(5),
+      {{maxWidth: 220}}
+    )
+    .bindTooltip('<b>' + n.label + '</b>' + (n.street ? '<br>' + n.street : ''),
+                 {{permanent: false}})
+    .addTo(map);
+}});
+
+// ── Panel toggle ──────────────────────────────────────────────────────────────
+var panelOpen = false;
+function togglePanel() {{
+  panelOpen = !panelOpen;
+  document.getElementById('panel').classList.toggle('open', panelOpen);
+  document.getElementById('map').classList.toggle('panel-open', panelOpen);
+  setTimeout(function() {{ map.invalidateSize(); }}, 320);
+  document.getElementById('toggle-btn').textContent =
+    panelOpen ? '✕ Close Panel' : '☰ Analysis Panel';
+}}
+</script>
+</body>
+</html>"""
+
+    # Serve via localhost so Leaflet CDN + OSM tiles load correctly
+    import tempfile, http.server, socketserver
+
+    tmpdir = tempfile.mkdtemp()
+    html_path = os.path.join(tmpdir, 'dashboard.html')
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+    # Also save a copy locally
+    with open('dashboard.html', 'w', encoding='utf-8') as f:
+        f.write(html)
+
+    with socketserver.TCPServer(('', 0), None) as s:
+        port = s.server_address[1]
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=tmpdir, **kwargs)
+        def log_message(self, *a): pass
+
+    socketserver.TCPServer.allow_reuse_address = True
+    httpd = socketserver.TCPServer(('', port), Handler)
+
+    def serve():
+        threading.Timer(120, httpd.shutdown).start()
+        httpd.serve_forever()
+        httpd.server_close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+
+    url = f'http://localhost:{port}/dashboard.html'
+    webbrowser.open(url)
+    print(f"\n  Dashboard opened at {url}")
+    print("  → Full-screen map with Google Maps-style zoom/pan")
+    print("  → Click '☰ Analysis Panel' to open comparison charts")
+    print("  → Toggle individual algorithm paths via the left panel")
+    print("  → Click any node marker for street name + coordinates")
+    t.join(timeout=125)
+
+
+
 
 
 # ── Table ─────────────────────────────────────────────────────────────────────
 
 def print_table(records: list) -> None:
-    header = f"{'Algorithm':<20} {'Path Cost':>14} {'Hops':>6} {'Expanded':>10} {'Found':>6}"
+    """
+    Print comparison table with a legend explaining each column.
+
+    Hops     = number of edges in the path (path length - 1).
+               hops=1 means a direct start→goal edge was used.
+               hops=2 means start→intermediate→goal, etc.
+
+    Expanded = total node expansions (pops from frontier).
+               For IDA* this counts across ALL threshold iterations,
+               so it can exceed the graph size — that's the trade-off
+               for IDA*'s low memory usage vs A*'s single-pass expansion.
+
+    Path Cost = sum of custom_weight along the chosen path
+                (dist_km × traffic × pothole / safety).
+    """
+    header = (f"{'Algorithm':<20} {'Path Cost':>12} {'Hops':>6} "
+              f"{'Expanded':>10} {'Unique Nodes':>14} {'Optimal':>8} {'Found':>6}")
     sep = "=" * len(header)
     print(f"\n{sep}\n{header}\n{sep}")
+
+    # Algorithms known to be cost-optimal
+    optimal_algos = {'UCS', 'A*', 'IDA*', 'Bidirectional A*'}
+    # Find best cost for reference
+    costs = [r['path_cost'] for r in records if r['path_cost'] is not None]
+    best_cost = min(costs) if costs else None
+
     for r in records:
-        found = "Yes" if r['path_cost'] is not None else "No"
-        cost  = f"{r['path_cost']:.2f}" if r['path_cost'] is not None else "—"
-        print(f"{r['algorithm']:<20} {cost:>14} {r['hop_count']:>6} "
-              f"{r['nodes_expanded']:>10} {found:>6}")
+        found    = "Yes" if r['path_cost'] is not None else "No"
+        cost     = f"{r['path_cost']:.2f}" if r['path_cost'] is not None else "—"
+        optimal  = "✓" if r['algorithm'] in optimal_algos and r['path_cost'] == best_cost else "—"
+        unique   = len(set(r.get('path', [])))
+        print(f"{r['algorithm']:<20} {cost:>12} {r['hop_count']:>6} "
+              f"{r['nodes_expanded']:>10} {unique:>14} {optimal:>8} {found:>6}")
+
     print(sep)
+    print("\n  Legend:")
+    print("  Hops         = edges in path (1 = direct start→goal edge)")
+    print("  Expanded     = total node pops from frontier")
+    print("                 (IDA* re-expands nodes each iteration — expected)")
+    print("  Unique Nodes = distinct nodes in the solution path")
+    print("  Optimal      = ✓ if algorithm guarantees minimum cost path")
+    print()
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     print("=" * 52)
-    print("   AI Pathfinding System — Custom Node Graph")
+    print("   AI Pathfinding System — OSM Road Network")
     print("=" * 52)
-    print("\nStep 1: Place your nodes on the map.")
+
+    import time
+    from map_loader import load_graph, build_search_graph
+
+    # Step 1: Load OSM graph for Dhaka area upfront
+    # so node snapping works correctly during map selection
+    print("\nStep 1: Loading OSM road network for Dhaka...")
+    _CENTER = (23.7766, 90.4227)
+    seed = int(time.time()) % 100000
+    osm_G = load_graph(center=_CENTER, dist=15000, seed=seed)
+
+    # Step 2: Place nodes on map (snaps to real OSM node IDs)
+    print("\nStep 2: Place your nodes on the map.")
     print("  • First click  = START")
     print("  • Last click   = GOAL")
     print("  • Middle clicks = intermediate nodes")
     print("  • Recommended: 5-15 nodes\n")
 
-    # Collect nodes from map
-    nodes = collect_nodes_from_map()
+    nodes = collect_nodes_from_map(osm_G)
     if len(nodes) < 2:
         print("Not enough nodes selected. Exiting.")
         return
@@ -514,12 +1039,12 @@ def main():
     start = nodes[0]['id']
     goal  = nodes[-1]['id']
 
-    # Build custom graph
-    print("\nStep 2: Building custom graph...")
-    G = build_custom_graph(nodes)
+    # Step 3: Build real OSM search graph between chosen nodes
+    print(f"\nStep 3: Building real OSM search graph...  (seed={seed})")
+    G = build_search_graph(osm_G, nodes, seed=seed)
 
-    # Run all algorithms
-    print("\nStep 3: Running algorithms...")
+    # Step 4: Run all algorithms
+    print("\nStep 4: Running algorithms...")
     records = run_all(G, start, goal)
 
     # Print table
@@ -541,9 +1066,10 @@ def main():
     # Comparison bar chart
     plot_comparison(records)
 
-    # Graph + paths visualization
-    print("\nStep 4: Visualizing...")
-    visualize_matplotlib(G, records, nodes, start, goal)
+    # Build interactive dashboard
+    print("\nStep 5: Geocoding nodes and building dashboard...")
+    node_names = _geocode_all_nodes(G, nodes)
+    build_dashboard(G, records, nodes, start, goal, node_names)
 
 
 if __name__ == '__main__':

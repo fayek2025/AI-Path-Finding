@@ -3,7 +3,7 @@ from models import SearchResult
 
 # IDS on a large real-world graph is impractical beyond ~30 hops.
 # We cap depth and wall-clock time to keep it responsive.
-_MAX_DEPTH   = 35
+_MAX_DEPTH   = 100
 _MAX_SECONDS = 20
 
 

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>AI Pathfinding Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; font-family:'Segoe UI',Arial,sans-serif; overflow:hidden; }
+
+/* ── Header ── */
+#header {
+  position:fixed; top:0; left:0; right:0; height:44px; z-index:2000;
+  background:linear-gradient(135deg,#1a252f,#2980b9);
+  color:white; display:flex; align-items:center; padding:0 16px;
+  gap:16px; box-shadow:0 2px 8px rgba(0,0,0,0.3);
+}
+#header h1 { font-size:15px; font-weight:700; white-space:nowrap; }
+#header .meta { font-size:11px; opacity:0.8; }
+#toggle-btn {
+  margin-left:auto; padding:6px 14px; background:rgba(255,255,255,0.15);
+  border:1px solid rgba(255,255,255,0.3); color:white; border-radius:5px;
+  cursor:pointer; font-size:12px; white-space:nowrap;
+  transition:background 0.2s;
+}
+#toggle-btn:hover { background:rgba(255,255,255,0.25); }
+
+/* ── Map ── */
+#map {
+  position:fixed; top:44px; left:0; right:0; bottom:0; z-index:1;
+  transition:right 0.3s ease;
+}
+#map.panel-open { right:420px; }
+
+/* ── Layer control panel (path toggles) ── */
+#layer-panel {
+  position:fixed; top:54px; left:10px; z-index:1500;
+  background:rgba(255,255,255,0.95); border-radius:8px;
+  padding:10px 14px; box-shadow:0 2px 10px rgba(0,0,0,0.2);
+  font-size:12px; min-width:160px;
+}
+#layer-panel h4 { font-size:11px; color:#555; margin-bottom:8px;
+                   text-transform:uppercase; letter-spacing:0.5px; }
+.layer-row { display:flex; align-items:center; gap:8px;
+              margin-bottom:5px; cursor:pointer; }
+.layer-row:hover { opacity:0.75; }
+.layer-swatch { width:22px; height:4px; border-radius:2px; flex-shrink:0; }
+.layer-label { font-size:11px; color:#333; }
+
+/* ── Right panel ── */
+#panel {
+  position:fixed; top:44px; right:-420px; width:420px; bottom:0;
+  z-index:1500; background:#f4f6f8; overflow-y:auto;
+  box-shadow:-3px 0 12px rgba(0,0,0,0.15);
+  transition:right 0.3s ease;
+  border-left:1px solid #dde;
+}
+#panel.open { right:0; }
+#panel::-webkit-scrollbar { width:5px; }
+#panel::-webkit-scrollbar-thumb { background:#ccc; border-radius:3px; }
+
+.section {
+  background:white; margin:10px; border-radius:8px; padding:12px;
+  box-shadow:0 1px 4px rgba(0,0,0,0.07);
+}
+.section h2 {
+  font-size:11px; font-weight:700; color:#2c3e50; margin-bottom:10px;
+  text-transform:uppercase; letter-spacing:0.6px;
+  border-bottom:2px solid #3498db; padding-bottom:5px;
+}
+table { width:100%; border-collapse:collapse; font-size:11px; }
+th { background:#2c3e50; color:white; padding:6px 8px;
+      text-align:left; font-size:10px; font-weight:600; }
+td { padding:5px 8px; border-bottom:1px solid #f0f0f0; }
+tr:hover td { background:#f0f7ff; }
+tr.optimal td { background:#eafaf1; font-weight:600; }
+tr.nopath td { color:#bbb; }
+.dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+        margin-right:5px; vertical-align:middle; }
+.ok   { color:#27ae60; font-weight:700; }
+.fail { color:#e74c3c; font-weight:700; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>🗺️ AI Pathfinding Dashboard</h1>
+  <div class="meta">
+    2 nodes · 32 intersections ·
+    37 road segments ·
+    7 paths found
+  </div>
+  <button id="toggle-btn" onclick="togglePanel()">☰ Analysis Panel</button>
+</div>
+
+<div id="map"></div>
+
+<!-- Layer toggles -->
+<div id="layer-panel">
+  <h4>Toggle Paths</h4>
+  <div id="layer-rows"></div>
+</div>
+
+<!-- Right panel -->
+<div id="panel">
+
+  <div class="section">
+    <h2>Algorithm Comparison</h2>
+    <table>
+      <thead><tr>
+        <th>Algorithm</th><th>Cost</th><th>Hops</th>
+        <th>Expanded</th><th>Nodes</th><th>Opt</th><th>Found</th>
+      </tr></thead>
+      <tbody><tr class=""><td><span class="dot" style="background:#1f77b4"></span>BFS</td><td>10.68</td><td>10</td><td>14</td><td>11</td><td style="color:#27ae60;font-weight:700"></td><td class="ok">✓</td></tr>
+<tr class=""><td><span class="dot" style="background:#9467bd"></span>DFS</td><td>11.51</td><td>11</td><td>12</td><td>12</td><td style="color:#27ae60;font-weight:700"></td><td class="ok">✓</td></tr>
+<tr class=""><td><span class="dot" style="background:#17becf"></span>IDS</td><td>10.68</td><td>10</td><td>135</td><td>11</td><td style="color:#27ae60;font-weight:700"></td><td class="ok">✓</td></tr>
+<tr class="optimal"><td><span class="dot" style="background:#2ca02c"></span>UCS</td><td>10.68</td><td>10</td><td>15</td><td>11</td><td style="color:#27ae60;font-weight:700">✓</td><td class="ok">✓</td></tr>
+<tr class="optimal"><td><span class="dot" style="background:#d62728"></span>A*</td><td>10.68</td><td>10</td><td>15</td><td>11</td><td style="color:#27ae60;font-weight:700">✓</td><td class="ok">✓</td></tr>
+<tr class=""><td><span class="dot" style="background:#ff7f0e"></span>Greedy</td><td>11.14</td><td>11</td><td>12</td><td>12</td><td style="color:#27ae60;font-weight:700"></td><td class="ok">✓</td></tr>
+<tr class="optimal"><td><span class="dot" style="background:#e377c2"></span>IDA*</td><td>10.68</td><td>10</td><td>476</td><td>11</td><td style="color:#27ae60;font-weight:700">✓</td><td class="ok">✓</td></tr>
+<tr class="nopath"><td><span class="dot" style="background:#bcbd22"></span>Bidirectional A*</td><td>—</td><td>0</td><td>0</td><td>0</td><td style="color:#27ae60;font-weight:700">✓</td><td class="fail">✗</td></tr>
+</tbody>
+    </table>
+    <div style="font-size:9px;color:#999;margin-top:6px;line-height:1.7">
+      Cost = Σ(km×traffic×pothole/safety) · Hops = road segments ·
+      Expanded = frontier pops · <span style="color:#27ae60">■</span> = optimal
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Path Cost</h2><div>                            <div id="ed0da824-9b61-422e-8471-2e62e6d5c190" class="plotly-graph-div" style="height:220px; width:100%;"></div>            <script>                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("ed0da824-9b61-422e-8471-2e62e6d5c190")) {                    Plotly.newPlot(                        "ed0da824-9b61-422e-8471-2e62e6d5c190",                        [{"marker":{"color":"#3498db"},"text":["10.68","11.51","10.68","10.68","10.68","11.14","10.68"],"textposition":"outside","x":["BFS","DFS","IDS","UCS","A*","Greedy","IDA*"],"y":[10.6756,11.5123,10.6756,10.6756,10.6756,11.1444,10.6756],"type":"bar"}],                        {"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"title":{"font":{"size":11},"text":"Path Cost"},"margin":{"l":30,"r":10,"t":36,"b":55},"xaxis":{"tickfont":{"size":8},"tickangle":-30},"yaxis":{"gridcolor":"#e0e0e0"},"height":220,"paper_bgcolor":"white","plot_bgcolor":"#f8f9fa"},                        {"responsive": true}                    )                };            </script>        </div>
+  </div>
+  <div class="section">
+    <h2>Hop Count</h2><div>                            <div id="c5713cc7-5ab9-4bf8-b93f-fc2acad6bf7a" class="plotly-graph-div" style="height:220px; width:100%;"></div>            <script>                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("c5713cc7-5ab9-4bf8-b93f-fc2acad6bf7a")) {                    Plotly.newPlot(                        "c5713cc7-5ab9-4bf8-b93f-fc2acad6bf7a",                        [{"marker":{"color":"#e67e22"},"text":["10","11","10","10","10","11","10","0"],"textposition":"outside","x":["BFS","DFS","IDS","UCS","A*","Greedy","IDA*","Bidirectional A*"],"y":[10,11,10,10,10,11,10,0],"type":"bar"}],                        {"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"title":{"font":{"size":11},"text":"Hop Count"},"margin":{"l":30,"r":10,"t":36,"b":55},"xaxis":{"tickfont":{"size":8},"tickangle":-30},"yaxis":{"gridcolor":"#e0e0e0"},"height":220,"paper_bgcolor":"white","plot_bgcolor":"#f8f9fa"},                        {"responsive": true}                    )                };            </script>        </div>
+  </div>
+  <div class="section">
+    <h2>Nodes Expanded</h2><div>                            <div id="e332d4ec-7d30-42ad-8f21-8bf7f5c2cdbd" class="plotly-graph-div" style="height:220px; width:100%;"></div>            <script>                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("e332d4ec-7d30-42ad-8f21-8bf7f5c2cdbd")) {                    Plotly.newPlot(                        "e332d4ec-7d30-42ad-8f21-8bf7f5c2cdbd",                        [{"marker":{"color":"#27ae60"},"text":["14","12","135","15","15","12","476","0"],"textposition":"outside","x":["BFS","DFS","IDS","UCS","A*","Greedy","IDA*","Bidirectional A*"],"y":[14,12,135,15,15,12,476,0],"type":"bar"}],                        {"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"title":{"font":{"size":11},"text":"Nodes Expanded"},"margin":{"l":30,"r":10,"t":36,"b":55},"xaxis":{"tickfont":{"size":8},"tickangle":-30},"yaxis":{"gridcolor":"#e0e0e0"},"height":220,"paper_bgcolor":"white","plot_bgcolor":"#f8f9fa"},                        {"responsive": true}                    )                };            </script>        </div>
+  </div>
+
+  <div class="section">
+    <h2>Chosen Nodes</h2>
+    <table>
+      <thead><tr><th>Role</th><th>Street</th><th>Lat</th><th>Lon</th></tr></thead>
+      <tbody><tr><td><b style="color:#27ae60">START</b></td><td>START: Dilkusha Road</td><td>23.72786</td><td>90.41765</td></tr>
+<tr><td><b style="color:#e74c3c">GOAL</b></td><td>GOAL: 23.7277,90.4116</td><td>23.72770</td><td>90.41161</td></tr>
+</tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+// ── Data from Python ──────────────────────────────────────────────────────────
+var ROAD_FEATURES  = [{"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4176521, 23.7278604], [90.4178154, 23.7281367]]}, "properties": {"highway": "unclassified", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4176521, 23.7278604], [90.4170198, 23.727944]]}, "properties": {"highway": "secondary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4160459, 23.7259304], [90.4160271, 23.7267455]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4160459, 23.7259304], [90.4162623, 23.7259338]]}, "properties": {"highway": "tertiary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4160271, 23.7267455], [90.4162527, 23.7267407]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4162623, 23.7259338], [90.416622, 23.7259406]]}, "properties": {"highway": "tertiary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4162527, 23.7267407], [90.4166058, 23.7267434]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4167233, 23.7280368], [90.4170896, 23.7285146]]}, "properties": {"highway": "secondary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4169208, 23.7269613], [90.417296, 23.7269248]]}, "properties": {"highway": "tertiary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.417296, 23.7269248], [90.417944, 23.726825]]}, "properties": {"highway": "tertiary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4152408, 23.7259227], [90.4160459, 23.7259304]]}, "properties": {"highway": "tertiary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.417944, 23.726825], [90.4180123, 23.7270979]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4163633, 23.7289402], [90.4159505, 23.7291902]]}, "properties": {"highway": "unclassified", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4163633, 23.7289402], [90.4166771, 23.7293406]]}, "properties": {"highway": "unclassified", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.416221, 23.729609], [90.4152274, 23.7301925]]}, "properties": {"highway": "primary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4166771, 23.7293406], [90.416221, 23.729609]]}, "properties": {"highway": "primary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4172033, 23.7284554], [90.4170896, 23.7285146]]}, "properties": {"highway": "unclassified", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4151068, 23.7259264], [90.4152408, 23.7259227]]}, "properties": {"highway": "tertiary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4152274, 23.7301925], [90.4151047, 23.7302232]]}, "properties": {"highway": "primary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4170198, 23.727944], [90.4168001, 23.7279726]]}, "properties": {"highway": "secondary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4168001, 23.7279726], [90.4167233, 23.7280368]]}, "properties": {"highway": "secondary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4178154, 23.7281367], [90.4172033, 23.7284554]]}, "properties": {"highway": "unclassified", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4178154, 23.7281367], [90.4176521, 23.7278604]]}, "properties": {"highway": "unclassified", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4166058, 23.7267434], [90.4166756, 23.7270905]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.416622, 23.7259406], [90.4166058, 23.7267434]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.412112, 23.7251493], [90.4150483, 23.725786]]}, "properties": {"highway": "primary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4180123, 23.7270979], [90.4185942, 23.7269963]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4185942, 23.7269963], [90.4187099, 23.7276324]]}, "properties": {"highway": "residential", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4116076, 23.7276961], [90.412112, 23.7251493]]}, "properties": {"highway": "primary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4170896, 23.7285146], [90.4163633, 23.7289402]]}, "properties": {"highway": "unclassified", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4150483, 23.725786], [90.4151068, 23.7259264]]}, "properties": {"highway": "primary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4151047, 23.7302232], [90.4116321, 23.7301197]]}, "properties": {"highway": "primary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4159505, 23.7291902], [90.416221, 23.729609]]}, "properties": {"highway": "tertiary", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4187099, 23.7276324], [90.4176521, 23.7278604]]}, "properties": {"highway": "secondary", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4187099, 23.7276324], [90.4178154, 23.7281367]]}, "properties": {"highway": "unclassified", "congested": false}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]}, "properties": {"highway": "unclassified", "congested": true}}, {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[90.4166756, 23.7270905], [90.4169208, 23.7269613]]}, "properties": {"highway": "tertiary", "congested": false}}];
+var PATH_FEATURES  = {"BFS": {"color": "#1f77b4", "coords": [[[90.4176521, 23.7278604], [90.4178154, 23.7281367]], [[90.4178154, 23.7281367], [90.4172033, 23.7284554]], [[90.4172033, 23.7284554], [90.4170896, 23.7285146]], [[90.4170896, 23.7285146], [90.4163633, 23.7289402]], [[90.4163633, 23.7289402], [90.4159505, 23.7291902]], [[90.4159505, 23.7291902], [90.416221, 23.729609]], [[90.416221, 23.729609], [90.4152274, 23.7301925]], [[90.4152274, 23.7301925], [90.4151047, 23.7302232]], [[90.4151047, 23.7302232], [90.4116321, 23.7301197]], [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]], "cost": 10.6756, "hops": 10, "expanded": 14}, "DFS": {"color": "#9467bd", "coords": [[[90.4176521, 23.7278604], [90.4170198, 23.727944]], [[90.4170198, 23.727944], [90.4168001, 23.7279726]], [[90.4168001, 23.7279726], [90.4167233, 23.7280368]], [[90.4167233, 23.7280368], [90.4170896, 23.7285146]], [[90.4170896, 23.7285146], [90.4163633, 23.7289402]], [[90.4163633, 23.7289402], [90.4166771, 23.7293406]], [[90.4166771, 23.7293406], [90.416221, 23.729609]], [[90.416221, 23.729609], [90.4152274, 23.7301925]], [[90.4152274, 23.7301925], [90.4151047, 23.7302232]], [[90.4151047, 23.7302232], [90.4116321, 23.7301197]], [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]], "cost": 11.5123, "hops": 11, "expanded": 12}, "IDS": {"color": "#17becf", "coords": [[[90.4176521, 23.7278604], [90.4178154, 23.7281367]], [[90.4178154, 23.7281367], [90.4172033, 23.7284554]], [[90.4172033, 23.7284554], [90.4170896, 23.7285146]], [[90.4170896, 23.7285146], [90.4163633, 23.7289402]], [[90.4163633, 23.7289402], [90.4159505, 23.7291902]], [[90.4159505, 23.7291902], [90.416221, 23.729609]], [[90.416221, 23.729609], [90.4152274, 23.7301925]], [[90.4152274, 23.7301925], [90.4151047, 23.7302232]], [[90.4151047, 23.7302232], [90.4116321, 23.7301197]], [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]], "cost": 10.6756, "hops": 10, "expanded": 135}, "UCS": {"color": "#2ca02c", "coords": [[[90.4176521, 23.7278604], [90.4178154, 23.7281367]], [[90.4178154, 23.7281367], [90.4172033, 23.7284554]], [[90.4172033, 23.7284554], [90.4170896, 23.7285146]], [[90.4170896, 23.7285146], [90.4163633, 23.7289402]], [[90.4163633, 23.7289402], [90.4159505, 23.7291902]], [[90.4159505, 23.7291902], [90.416221, 23.729609]], [[90.416221, 23.729609], [90.4152274, 23.7301925]], [[90.4152274, 23.7301925], [90.4151047, 23.7302232]], [[90.4151047, 23.7302232], [90.4116321, 23.7301197]], [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]], "cost": 10.6756, "hops": 10, "expanded": 15}, "A*": {"color": "#d62728", "coords": [[[90.4176521, 23.7278604], [90.4178154, 23.7281367]], [[90.4178154, 23.7281367], [90.4172033, 23.7284554]], [[90.4172033, 23.7284554], [90.4170896, 23.7285146]], [[90.4170896, 23.7285146], [90.4163633, 23.7289402]], [[90.4163633, 23.7289402], [90.4159505, 23.7291902]], [[90.4159505, 23.7291902], [90.416221, 23.729609]], [[90.416221, 23.729609], [90.4152274, 23.7301925]], [[90.4152274, 23.7301925], [90.4151047, 23.7302232]], [[90.4151047, 23.7302232], [90.4116321, 23.7301197]], [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]], "cost": 10.6756, "hops": 10, "expanded": 15}, "Greedy": {"color": "#ff7f0e", "coords": [[[90.4176521, 23.7278604], [90.4170198, 23.727944]], [[90.4170198, 23.727944], [90.4168001, 23.7279726]], [[90.4168001, 23.7279726], [90.4167233, 23.7280368]], [[90.4167233, 23.7280368], [90.4170896, 23.7285146]], [[90.4170896, 23.7285146], [90.4163633, 23.7289402]], [[90.4163633, 23.7289402], [90.4159505, 23.7291902]], [[90.4159505, 23.7291902], [90.416221, 23.729609]], [[90.416221, 23.729609], [90.4152274, 23.7301925]], [[90.4152274, 23.7301925], [90.4151047, 23.7302232]], [[90.4151047, 23.7302232], [90.4116321, 23.7301197]], [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]], "cost": 11.1444, "hops": 11, "expanded": 12}, "IDA*": {"color": "#e377c2", "coords": [[[90.4176521, 23.7278604], [90.4178154, 23.7281367]], [[90.4178154, 23.7281367], [90.4172033, 23.7284554]], [[90.4172033, 23.7284554], [90.4170896, 23.7285146]], [[90.4170896, 23.7285146], [90.4163633, 23.7289402]], [[90.4163633, 23.7289402], [90.4159505, 23.7291902]], [[90.4159505, 23.7291902], [90.416221, 23.729609]], [[90.416221, 23.729609], [90.4152274, 23.7301925]], [[90.4152274, 23.7301925], [90.4151047, 23.7302232]], [[90.4151047, 23.7302232], [90.4116321, 23.7301197]], [[90.4116321, 23.7301197], [90.4116076, 23.7276961]]], "cost": 10.6756, "hops": 10, "expanded": 476}};
+var INTER_NODES    = [{"lat": 23.7259304, "lon": 90.4160459, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be \u09b8\u09dc\u0995"}, {"lat": 23.7267455, "lon": 90.4160271, "name": "\u0995\u09be\u09aa\u09cd\u09a4\u09be\u09a8 \u09ac\u09be\u099c\u09be\u09b0"}, {"lat": 23.7259338, "lon": 90.4162623, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be \u09b8\u09dc\u0995"}, {"lat": 23.7267407, "lon": 90.4162527, "name": "\u0995\u09be\u09aa\u09cd\u09a4\u09be\u09a8 \u09ac\u09be\u099c\u09be\u09b0"}, {"lat": 23.7280368, "lon": 90.4167233, "name": "Dilkusha Road"}, {"lat": 23.7269613, "lon": 90.4169208, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be \u09b8\u09dc\u0995"}, {"lat": 23.7269248, "lon": 90.417296, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be"}, {"lat": 23.7259227, "lon": 90.4152408, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be \u09b8\u09dc\u0995"}, {"lat": 23.726825, "lon": 90.417944, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be \u09b8\u09dc\u0995"}, {"lat": 23.7289402, "lon": 90.4163633, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be"}, {"lat": 23.729609, "lon": 90.416221, "name": "Dilkusha Road"}, {"lat": 23.7293406, "lon": 90.4166771, "name": "\u09ae\u09a4\u09bf\u099d\u09bf\u09b2 \u09b8\u09dc\u0995"}, {"lat": 23.7284554, "lon": 90.4172033, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be"}, {"lat": 23.7259264, "lon": 90.4151068, "name": "\u09a1\u09bf\u0986\u0987\u099f\u09bf \u098f\u09ad\u09bf\u09a8\u09bf\u0989"}, {"lat": 23.7301925, "lon": 90.4152274, "name": "\u09ae\u09a4\u09bf\u099d\u09bf\u09b2 \u09b8\u09dc\u0995"}, {"lat": 23.727944, "lon": 90.4170198, "name": "Dilkusha Road"}, {"lat": 23.7279726, "lon": 90.4168001, "name": "Dilkusha Road"}, {"lat": 23.7281367, "lon": 90.4178154, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be"}, {"lat": 23.7267434, "lon": 90.4166058, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be \u09b8\u09dc\u0995"}, {"lat": 23.7259406, "lon": 90.416622, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be \u09b8\u09dc\u0995"}, {"lat": 23.7251493, "lon": 90.412112, "name": "\u09a1\u09bf\u0986\u0987\u099f\u09bf \u098f\u09ad\u09bf\u09a8\u09bf\u0989"}, {"lat": 23.7270979, "lon": 90.4180123, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be"}, {"lat": 23.7269963, "lon": 90.4185942, "name": "\u09a6\u09bf\u09b2\u0995\u09c1\u09b6\u09be"}, {"lat": 23.7285146, "lon": 90.4170896, "name": "23.7285,90.4171"}, {"lat": 23.725786, "lon": 90.4150483, "name": "23.7258,90.4150"}, {"lat": 23.7302232, "lon": 90.4151047, "name": "23.7302,90.4151"}, {"lat": 23.7291902, "lon": 90.4159505, "name": "23.7292,90.4160"}, {"lat": 23.7276324, "lon": 90.4187099, "name": "23.7276,90.4187"}, {"lat": 23.7301197, "lon": 90.4116321, "name": "23.7301,90.4116"}, {"lat": 23.7270905, "lon": 90.4166756, "name": "23.7271,90.4167"}];
+var CHOSEN_NODES   = [{"lat": 23.7278604, "lon": 90.4176521, "label": "START", "street": "START: Dilkusha Road", "color": "#27ae60", "isStart": true, "isGoal": false}, {"lat": 23.7276961, "lon": 90.4116076, "label": "GOAL", "street": "GOAL: 23.7277,90.4116", "color": "#e74c3c", "isStart": false, "isGoal": true}];
+var COLORS         = {"BFS": "#1f77b4", "DFS": "#9467bd", "IDS": "#17becf", "UCS": "#2ca02c", "A*": "#d62728", "Greedy": "#ff7f0e", "IDA*": "#e377c2", "Bidirectional A*": "#bcbd22"};
+
+// ── Map init ──────────────────────────────────────────────────────────────────
+var map = L.map('map', {
+  center: [23.72777825, 90.41462985],
+  zoom: 15,
+  zoomControl: true,
+});
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19,
+}).addTo(map);
+
+// ── Road network ──────────────────────────────────────────────────────────────
+ROAD_FEATURES.forEach(function(f) {
+  var c = f.properties.congested ? '#e74c3c' : '#888888';
+  var w = f.properties.congested ? 2.5 : 1.2;
+  L.polyline(
+    f.geometry.coordinates.map(function(c) { return [c[1], c[0]]; }),
+    {color:c, weight:w, opacity:0.6}
+  ).addTo(map);
+});
+
+// ── Algorithm paths ───────────────────────────────────────────────────────────
+var pathLayers = {};
+var layerVisible = {};
+
+Object.keys(PATH_FEATURES).forEach(function(algo) {
+  var pf = PATH_FEATURES[algo];
+  var group = L.layerGroup();
+  pf.coords.forEach(function(seg) {
+    L.polyline(
+      seg.map(function(c) { return [c[1], c[0]]; }),
+      {color: pf.color, weight: 5, opacity: 0.85,
+        smoothFactor: 1}
+    ).bindTooltip(
+      '<b>' + algo + '</b><br>Cost: ' + (pf.cost ? pf.cost.toFixed(2) : '—') +
+      '<br>Hops: ' + pf.hops + '<br>Expanded: ' + pf.expanded,
+      {sticky: true}
+    ).addTo(group);
+  });
+  group.addTo(map);
+  pathLayers[algo] = group;
+  layerVisible[algo] = true;
+});
+
+// ── Layer toggle UI ───────────────────────────────────────────────────────────
+var rowsDiv = document.getElementById('layer-rows');
+Object.keys(PATH_FEATURES).forEach(function(algo) {
+  var pf = PATH_FEATURES[algo];
+  var row = document.createElement('div');
+  row.className = 'layer-row';
+  row.id = 'row-' + algo;
+  row.innerHTML =
+    '<div class="layer-swatch" style="background:' + pf.color + '"></div>' +
+    '<span class="layer-label">' + algo + '</span>';
+  row.onclick = function() {
+    if (layerVisible[algo]) {
+      map.removeLayer(pathLayers[algo]);
+      row.style.opacity = '0.35';
+    } else {
+      map.addLayer(pathLayers[algo]);
+      row.style.opacity = '1';
+    }
+    layerVisible[algo] = !layerVisible[algo];
+  };
+  rowsDiv.appendChild(row);
+});
+
+// ── Intersection nodes ────────────────────────────────────────────────────────
+INTER_NODES.forEach(function(n) {
+  L.circleMarker([n.lat, n.lon], {
+    radius: 3, color: '#777', fillColor: '#777',
+    fillOpacity: 0.7, weight: 1,
+  }).bindTooltip(n.name + '<br>' + n.lat.toFixed(5) + ', ' + n.lon.toFixed(5))
+    .addTo(map);
+});
+
+// ── Chosen nodes ──────────────────────────────────────────────────────────────
+CHOSEN_NODES.forEach(function(n) {
+  var icon = L.divIcon({
+    className: '',
+    html: '<div style="' +
+      'background:' + n.color + ';' +
+      'width:' + (n.isStart || n.isGoal ? '18px' : '14px') + ';' +
+      'height:' + (n.isStart || n.isGoal ? '18px' : '14px') + ';' +
+      'border-radius:50%;border:3px solid white;' +
+      'box-shadow:0 0 6px rgba(0,0,0,0.4);' +
+      '"></div>',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  });
+  L.marker([n.lat, n.lon], {icon: icon})
+    .bindPopup(
+      '<b style="color:' + n.color + '">' + n.label + '</b><br>' +
+      (n.street ? n.street + '<br>' : '') +
+      n.lat.toFixed(5) + ', ' + n.lon.toFixed(5),
+      {maxWidth: 220}
+    )
+    .bindTooltip('<b>' + n.label + '</b>' + (n.street ? '<br>' + n.street : ''),
+                 {permanent: false})
+    .addTo(map);
+});
+
+// ── Panel toggle ──────────────────────────────────────────────────────────────
+var panelOpen = false;
+function togglePanel() {
+  panelOpen = !panelOpen;
+  document.getElementById('panel').classList.toggle('open', panelOpen);
+  document.getElementById('map').classList.toggle('panel-open', panelOpen);
+  setTimeout(function() { map.invalidateSize(); }, 320);
+  document.getElementById('toggle-btn').textContent =
+    panelOpen ? '✕ Close Panel' : '☰ Analysis Panel';
+}
+</script>
+</body>
+</html>
