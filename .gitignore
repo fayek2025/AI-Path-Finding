@@ -1,1 +1,31 @@
-cache
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+
+# ── Project cache & generated outputs ────────────────────────────────────────
+cache/
+fullmap_output/
+scenario_output/
+
+# Generated PNG outputs in project root
+output_*.png
+comparison.png
+paths_map.png
+paths_map.html
+picker_map.html
+dashboard.html
+astar_tree.json
+results.json
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.env
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
