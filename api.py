@@ -16,7 +16,7 @@ import networkx as nx
 from comparison import run_all
 from heuristic import haversine_coords
 from map_loader import load_graph, build_search_graph
-from visualization import generate_path_map, generate_complexity_graphs
+from visualization import generate_path_map, generate_complexity_graphs, generate_expansion_maps, generate_comparison_graph
 
 # ── Global state ──────────────────────────────────────────────────────────────
 OSM_G: Optional[nx.MultiDiGraph] = None   # full OSM graph for snapping
@@ -89,11 +89,11 @@ app.add_middleware(
 
 
 class WeightParams(BaseModel):
-    traffic_weight:     float = 1.0
-    safety_weight:      float = 1.0
-    pothole_weight:     float = 1.0
-    road_age_weight:    float = 1.0   # higher = penalise older/worse roads more
-    turn_weight:        float = 1.0   # higher = penalise complex intersections more
+    traffic_weight:  float = 1.0   # Traffic Intensity exponent
+    safety_weight:   float = 1.0   # Safety Index exponent (benefit — divides cost)
+    road_age_weight: float = 1.0   # Road Quality exponent (older = higher cost)
+    turn_weight:     float = 1.0   # Turn Complexity exponent
+    # pothole_weight removed — excluded from weight matrix
 
 
 class SnapRequest(BaseModel):
@@ -112,39 +112,39 @@ class SetNodesRequest(BaseModel):
 
 def _apply_weights(G: nx.MultiDiGraph, params: WeightParams) -> nx.MultiDiGraph:
     """
-    Recompute custom_weight per edge so that each slider genuinely changes
-    which roads are preferred.
+    Recompute custom_weight using the project's weight matrix.
 
-    The key insight: when all sliders scale uniformly, the ratio between any
-    two roads stays constant (slider^N cancels out). To break this, each
-    slider raises only its own base factor to a power, making that dimension
-    dominate non-linearly as the slider increases.
+    Included factors (project's own road metrics from map_loader):
+      traffic_factor   — Traffic Intensity  (penalty, exponent = traffic_weight)
+      road_age_factor  — Road Quality       (penalty, exponent = road_age_weight)
+      safety_factor    — Safety Index       (benefit, exponent = safety_weight — divides)
+      turn_complexity  — Turn Complexity    (penalty, exponent = turn_weight)
+
+    Excluded:
+      pothole_factor   — removed from weight matrix
 
     Formula:
-        custom_weight = length_km
-                        * traffic^traffic_w
-                        * pothole^pothole_w
-                        * road_age^road_age_w
-                        * turn^turn_w
-                        / safety^safety_w
+      custom_weight = length_km
+                      * traffic ^ traffic_weight
+                      * road_age ^ road_age_weight
+                      * turn ^ turn_weight
+                      / safety ^ safety_weight
 
-    At slider=1.0 this equals the base custom_weight from map_loader.
-    At slider=3.0 the dominant factor overwhelms the others, genuinely
-    shifting which road type is cheapest.
+    Exponent approach ensures each slider non-linearly amplifies only its own
+    dimension, so different slider settings genuinely change which road type wins.
     """
     G = G.copy()
     for u, v, key, data in G.edges(keys=True, data=True):
         lkm = data.get('length', 100) / 1000.0
         t   = max(data.get('traffic_factor',  1.4), 1e-6)
         s   = max(data.get('safety_factor',   0.8), 1e-6)
-        p   = max(data.get('pothole_factor',  1.3), 1e-6)
         ra  = max(data.get('road_age_factor', 1.1), 1e-6)
         tc  = max(data.get('turn_complexity', 0.7), 1e-6)
+        # pothole_factor intentionally excluded
 
         G[u][v][key]['custom_weight'] = round(
             lkm
             * (t  ** params.traffic_weight)
-            * (p  ** params.pothole_weight)
             * (ra ** params.road_age_weight)
             * (tc ** params.turn_weight)
             / (s  ** params.safety_weight),
@@ -332,10 +332,10 @@ async def save_map_snapshot(req: SaveSnapshotRequest):
 @app.post("/api/generate-graphs")
 async def generate_graphs(params: WeightParams):
     """
-    Generate matplotlib visualisations for the current graph + algorithm results:
-      - output_path_map.png      : all algorithm paths on the road network
-      - output_complexity.png    : nodes expanded, time, memory, and complexity table
-    Returns the filenames so the frontend can open/display them.
+    Generate matplotlib visualisations:
+      - output_path_map.png           : all algorithm paths on OSM basemap
+      - output_complexity.png         : nodes expanded, time, memory, theory table
+      - output_expansion_<algo>.png   : per-algorithm expansion order map with POIs
     """
     if GRAPH is None or START is None or GOAL is None:
         raise HTTPException(400, "No graph loaded. Place nodes first.")
@@ -343,19 +343,25 @@ async def generate_graphs(params: WeightParams):
     G = _apply_weights(GRAPH, params)
     records = await run_in_threadpool(run_all, G, START, GOAL, None)
 
-    # Pass OSM_G as the full background map, GRAPH as the search subgraph,
-    # and NODES so all chosen waypoints are marked on the map
     path_map_file = await run_in_threadpool(
         generate_path_map, OSM_G, GRAPH, G, records, START, GOAL, NODES
     )
     complexity_file = await run_in_threadpool(
         generate_complexity_graphs, G, START, GOAL, records
     )
+    expansion_files = await run_in_threadpool(
+        generate_expansion_maps, OSM_G, GRAPH, records, START, GOAL, '.'
+    )
+    comparison_file = await run_in_threadpool(
+        generate_comparison_graph, G, START, GOAL, records
+    )
 
     return {
-        "path_map":   path_map_file,
-        "complexity": complexity_file,
-        "message":    "Graphs saved successfully.",
+        "path_map":        path_map_file,
+        "complexity":      complexity_file,
+        "expansion_maps":  expansion_files,
+        "comparison":      comparison_file,
+        "message":         f"Saved {3 + len(expansion_files)} graphs.",
     }
 
 

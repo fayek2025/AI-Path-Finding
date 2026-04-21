@@ -20,14 +20,12 @@ from comparison import ALGORITHMS
 
 # ── Algorithm colours (same as dashboard) ────────────────────────────────────
 COLORS = {
-    'BFS':              '#1f77b4',
-    'DFS':              '#9467bd',
-    'IDS':              '#17becf',
-    'UCS':              '#2ca02c',
-    'A*':               '#d62728',
-    'Greedy':           '#ff7f0e',
-    'IDA*':             '#e377c2',
-    'Bidirectional A*': '#bcbd22',
+    'BFS':    '#1f77b4',
+    'DFS':    '#9467bd',
+    'IDS':    '#17becf',
+    'UCS':    '#2ca02c',
+    'A*':     '#d62728',
+    'Greedy': '#ff7f0e',
 }
 
 # Highway type → display style on the map (width, colour, zorder)
@@ -419,3 +417,289 @@ def _complexity_table(ax, names):
             cell.set_text_props(color='#222222')
 
     ax.set_title('Theoretical Complexity', fontsize=11, fontweight='bold', pad=10)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Expansion map  (per-algorithm node expansion order + POIs + path outline)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_expansion_maps(osm_G: nx.MultiDiGraph,
+                             search_G: nx.MultiDiGraph,
+                             records: list,
+                             start: int, goal: int,
+                             out_dir: str = '.') -> list:
+    """
+    For each algorithm, generate one PNG showing:
+      - Full OSM road network as grey background
+      - Every expanded node coloured by expansion order (viridis: early=purple, late=yellow)
+      - The found path as a thick red outline
+      - Safety POIs (police/hospital/fire) as blue + markers
+      - Hazard POIs (bus_stop/marketplace/crossing) as red × markers
+      - Colorbar, legend, and title with stats
+
+    Returns list of saved file paths.
+    """
+    import os
+    osm_pos    = _node_positions_wgs(osm_G)
+    search_pos = _node_positions_wgs(search_G)
+
+    # Bounding box from search subgraph + padding
+    lons = [p[0] for p in search_pos.values()]
+    lats = [p[1] for p in search_pos.values()]
+    pad_lon = max((max(lons) - min(lons)) * 0.25, 0.01)
+    pad_lat = max((max(lats) - min(lats)) * 0.25, 0.01)
+    lon_min, lon_max = min(lons) - pad_lon, max(lons) + pad_lon
+    lat_min, lat_max = min(lats) - pad_lat, max(lats) + pad_lat
+
+    # Collect POIs from OSM graph nodes within bbox
+    safety_tags  = {'police', 'hospital', 'fire_station', 'clinic', 'pharmacy'}
+    hazard_tags  = {'bus_stop', 'marketplace', 'crossing', 'traffic_signals', 'fuel'}
+    safety_pois, hazard_pois = [], []
+    for nid, data in osm_G.nodes(data=True):
+        lon, lat = data.get('x'), data.get('y')
+        if lon is None or lat is None:
+            continue
+        if not (lon_min <= lon <= lon_max and lat_min <= lat <= lat_max):
+            continue
+        amenity = str(data.get('amenity', '') or data.get('highway', '') or '')
+        if amenity in safety_tags:
+            safety_pois.append((lon, lat))
+        elif amenity in hazard_tags:
+            hazard_pois.append((lon, lat))
+
+    saved = []
+
+    for rec in records:
+        algo         = rec['algorithm']
+        expansion    = rec.get('expansion_log', [])
+        path         = rec.get('path', [])
+        n_expanded   = rec['nodes_expanded']
+        path_cost    = rec.get('path_cost')
+        hop_count    = rec.get('hop_count', 0)
+
+        fig, ax = plt.subplots(figsize=(13, 13))
+        fig.patch.set_facecolor('white')
+        ax.set_facecolor('#f8f8f8')
+
+        # ── Layer 1: Full OSM road network (grey) ────────────────────────────
+        for u, v in osm_G.edges():
+            pu = osm_pos.get(u)
+            pv = osm_pos.get(v)
+            if pu is None or pv is None:
+                continue
+            if not (lon_min <= pu[0] <= lon_max and lat_min <= pu[1] <= lat_max):
+                continue
+            ax.plot([pu[0], pv[0]], [pu[1], pv[1]],
+                    color='#cccccc', linewidth=0.4, zorder=1, alpha=0.7)
+
+        # ── Layer 2: Expanded nodes coloured by expansion order ───────────────
+        if expansion:
+            n = len(expansion)
+            cmap = plt.get_cmap('viridis')
+            # Scatter all expanded nodes at once for performance
+            exp_lons, exp_lats, exp_colors = [], [], []
+            for order, nid in enumerate(expansion):
+                pos = search_pos.get(nid) or osm_pos.get(nid)
+                if pos is None:
+                    continue
+                exp_lons.append(pos[0])
+                exp_lats.append(pos[1])
+                exp_colors.append(order / max(n - 1, 1))
+
+            sc = ax.scatter(exp_lons, exp_lats,
+                            c=exp_colors, cmap='viridis',
+                            s=12, zorder=3, alpha=0.85,
+                            linewidths=0, vmin=0, vmax=1)
+
+            # Colorbar
+            cbar = fig.colorbar(sc, ax=ax, fraction=0.03, pad=0.01)
+            cbar.set_label('Expansion order (early → late)', fontsize=9)
+            cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
+            cbar.set_ticklabels([
+                '0',
+                str(n // 4),
+                str(n // 2),
+                str(3 * n // 4),
+                str(n)
+            ])
+
+        # ── Layer 3: Found path as thick red outline ──────────────────────────
+        if len(path) >= 2:
+            path_lons, path_lats = [], []
+            for nid in path:
+                pos = search_pos.get(nid) or osm_pos.get(nid)
+                if pos:
+                    path_lons.append(pos[0])
+                    path_lats.append(pos[1])
+            if len(path_lons) >= 2:
+                # White halo then red line
+                ax.plot(path_lons, path_lats,
+                        color='white', linewidth=7, zorder=5, solid_capstyle='round')
+                ax.plot(path_lons, path_lats,
+                        color='#e74c3c', linewidth=4, zorder=6, solid_capstyle='round')
+
+        # ── Layer 4: Safety POI markers only ─────────────────────────────────
+        if safety_pois:
+            sx = [p[0] for p in safety_pois]
+            sy = [p[1] for p in safety_pois]
+            ax.scatter(sx, sy, marker='+', s=40, color='#2980b9',
+                       linewidths=1.2, zorder=7, alpha=0.8)
+
+        # ── Layer 5: Start / Goal markers ────────────────────────────────────
+        for nid, marker, color, label in [
+            (start, '*', '#27ae60', 'Start'),
+            (goal,  'o', '#27ae60', 'Goal'),
+        ]:
+            pos = search_pos.get(nid) or osm_pos.get(nid)
+            if pos:
+                ax.scatter(*pos, s=220 if marker == '*' else 160,
+                           color=color, marker=marker,
+                           edgecolors='white', linewidths=1.5, zorder=10)
+
+        # ── Axes / title / legend ─────────────────────────────────────────────
+        ax.set_xlim(lon_min, lon_max)
+        ax.set_ylim(lat_min, lat_max)
+
+        cost_str = f"{path_cost:,.0f}" if path_cost is not None else 'N/A'
+        ax.set_title(
+            f"{algo}   (expanded={n_expanded:,},  hops={hop_count},  cost={cost_str})",
+            fontsize=13, fontweight='bold', pad=12
+        )
+        ax.set_xlabel('Longitude', fontsize=9)
+        ax.set_ylabel('Latitude',  fontsize=9)
+        ax.tick_params(labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#cccccc')
+
+        # Legend — safety POI only, no hazard
+        legend_items = [
+            mpatches.Patch(color='#27ae60', label='Start'),
+            mpatches.Patch(color='#27ae60', label='Goal'),
+            mpatches.Patch(color='#e74c3c', label='Found path'),
+        ]
+        if safety_pois:
+            legend_items.append(
+                plt.Line2D([0], [0], marker='+', color='#2980b9', linestyle='None',
+                           markersize=8, markeredgewidth=1.5,
+                           label='Safety POI (police/hospital/fire)')
+            )
+        ax.legend(handles=legend_items, loc='lower left',
+                  fontsize=8, framealpha=0.92)
+
+        safe_name = algo.replace('*', '_star').replace(' ', '_')
+        out_path  = os.path.join(out_dir, f'output_expansion_{safe_name}.png')
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+        saved.append(out_path)
+        print(f"  Saved expansion map: {out_path}")
+
+    return saved
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Comparison graph — all algorithms (web app version)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_comparison_graph(G: nx.MultiDiGraph,
+                               start: int, goal: int,
+                               records: list,
+                               out_path: str = 'output_comparison_all.png') -> str:
+    """
+    3×2 comparison figure for all algorithms from the web app run.
+    Panels: Nodes Expanded | Execution Time | Peak Memory |
+            Path Cost | Hop Count | Results Table
+    """
+    informed = {'A*', 'Greedy'}
+    names    = [r['algorithm'] for r in records]
+    colors   = [COLORS.get(n, '#888888') for n in names]
+    expanded = [r['nodes_expanded'] for r in records]
+    costs    = [r['path_cost'] if r['path_cost'] is not None else 0 for r in records]
+    hops     = [r['hop_count'] for r in records]
+
+    weight   = 'custom_weight'
+    algo_map = {name: mod for name, mod, _ in ALGORITHMS}
+    times_ms, mem_kb = [], []
+    for name in names:
+        mod = algo_map.get(name)
+        if mod:
+            times_ms.append(_measure_time(mod, G, start, goal, weight))
+            mem_kb.append(_measure_memory(mod, G, start, goal, weight))
+        else:
+            times_ms.append(0)
+            mem_kb.append(0)
+
+    fig, axes = plt.subplots(3, 2, figsize=(16, 14))
+    fig.patch.set_facecolor('white')
+    fig.suptitle(
+        'Web App — Algorithm Comparison\n'
+        'Weight: Traffic Intensity × Road Quality × Turn Complexity / Safety Index',
+        fontsize=13, fontweight='bold', y=1.01
+    )
+
+    bar_datasets = [
+        (axes[0, 0], expanded,  'Nodes Expanded',  'Nodes',      '{:.0f}'),
+        (axes[0, 1], times_ms,  'Execution Time',  'ms',         '{:.1f}'),
+        (axes[1, 0], mem_kb,    'Peak Memory',     'KB',         '{:.0f}'),
+        (axes[1, 1], costs,     'Path Cost',       'cost units', '{:.4f}'),
+        (axes[2, 0], hops,      'Hop Count',       'edges',      '{:.0f}'),
+    ]
+
+    for ax, values, title, ylabel, fmt in bar_datasets:
+        ax.set_facecolor('white')
+        bars = ax.bar(names, values, color=colors, edgecolor='white', linewidth=0.5)
+        max_v = max(values) if max(values) > 0 else 1
+        for bar in bars:
+            h = bar.get_height()
+            if h > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        h + max_v * 0.01,
+                        fmt.format(h), ha='center', va='bottom', fontsize=8, color='#333')
+        for i, name in enumerate(names):
+            fc = (0.16, 0.50, 0.73, 0.07) if name in informed else (0.15, 0.68, 0.38, 0.05)
+            ax.axvspan(i - 0.5, i + 0.5, facecolor=fc, zorder=0)
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.tick_params(axis='x', rotation=30, labelsize=8)
+        ax.tick_params(axis='y', labelsize=8)
+        ax.yaxis.grid(True, color='#e0e0e0', linewidth=0.7)
+        ax.set_axisbelow(True)
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#cccccc')
+        ax.legend(handles=[
+            mpatches.Patch(color=(0.16, 0.50, 0.73, 0.25), label='Informed'),
+            mpatches.Patch(color=(0.15, 0.68, 0.38, 0.20), label='Uninformed'),
+        ], fontsize=7, loc='upper right', framealpha=0.8)
+
+    # [2,1] Results table
+    ax = axes[2, 1]
+    ax.axis('off')
+    table_data = [
+        [r['algorithm'],
+         'Informed' if r['algorithm'] in informed else 'Uninformed',
+         '★ Yes' if r.get('is_optimal') else 'No',
+         f"{r['path_cost']:.4f}" if r['path_cost'] else 'N/A',
+         str(r['nodes_expanded']),
+         str(r['hop_count'])]
+        for r in records
+    ]
+    col_labels = ['Algorithm', 'Type', 'Optimal', 'Cost', 'Expanded', 'Hops']
+    tbl = ax.table(cellText=table_data, colLabels=col_labels,
+                   loc='center', cellLoc='center')
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8.5)
+    tbl.scale(1.0, 1.8)
+    for j in range(len(col_labels)):
+        tbl[0, j].set_facecolor('#2980b9')
+        tbl[0, j].set_text_props(color='white', fontweight='bold')
+    for i, row in enumerate(table_data, 1):
+        bg = '#ddeeff' if row[1] == 'Informed' else '#eeffee'
+        for j in range(len(col_labels)):
+            tbl[i, j].set_facecolor(bg)
+            tbl[i, j].set_text_props(color='#222222')
+    ax.set_title('Results Summary', fontsize=11, fontweight='bold', pad=8)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    return out_path

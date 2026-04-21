@@ -11,18 +11,14 @@ import algorithms.ids as ids
 import algorithms.ucs as ucs
 import algorithms.astar as astar
 import algorithms.greedy as greedy
-import algorithms.idastar as idastar
-import algorithms.bidirectional_astar as bi_astar
 
 ALGORITHMS = [
-    ('BFS',               bfs,      'custom_weight'),
-    ('DFS',               dfs,      'custom_weight'),
-    ('IDS',               ids,      'custom_weight'),
-    ('UCS',               ucs,      'custom_weight'),
-    ('A*',                astar,    'custom_weight'),
-    ('Greedy',            greedy,   'custom_weight'),
-    ('IDA*',              idastar,  'custom_weight'),
-    ('Bidirectional A*',  bi_astar, 'custom_weight'),
+    ('BFS',    bfs,    'custom_weight'),
+    ('DFS',    dfs,    'custom_weight'),
+    ('IDS',    ids,    'custom_weight'),
+    ('UCS',    ucs,    'custom_weight'),
+    ('A*',     astar,  'custom_weight'),
+    ('Greedy', greedy, 'custom_weight'),
 ]
 
 

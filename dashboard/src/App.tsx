@@ -11,7 +11,6 @@ import type { AlgorithmRecord, WeightParams } from './types'
 const COLORS: Record<string, string> = {
   'BFS': '#1f77b4', 'DFS': '#9467bd', 'IDS': '#17becf',
   'UCS': '#2ca02c', 'A*': '#d62728', 'Greedy': '#ff7f0e',
-  'IDA*': '#e377c2', 'Bidirectional A*': '#bcbd22',
 }
 const ALL_ALGOS = Object.keys(COLORS)
 
@@ -22,7 +21,7 @@ export default function App() {
   const [allNodes, setAllNodes]       = useState<GraphNode[]>([])
   const [chosenNodes, setChosenNodes] = useState<ChosenNode[]>([])
   const [records, setRecords]         = useState<AlgorithmRecord[]>([])
-  const [params, setParams]           = useState<WeightParams>({ traffic_weight: 1, safety_weight: 1, pothole_weight: 1, road_age_weight: 1, turn_weight: 1 })
+  const [params, setParams] = useState<WeightParams>({ traffic_weight: 1, safety_weight: 1, road_age_weight: 1, turn_weight: 1 })
   const [loading, setLoading]         = useState(false)
   const [snapping, setSnapping]       = useState(false)
   const [graphGenLoading, setGraphGenLoading] = useState(false)
@@ -142,7 +141,8 @@ export default function App() {
     setGraphGenMsg(null)
     try {
       const res = await generateGraphs(params)
-      setGraphGenMsg(`✅ Saved: ${res.path_map}  &  ${res.complexity}`)
+      const expCount = (res as any).expansion_maps?.length ?? 0
+      setGraphGenMsg(`✅ Saved: path map, complexity + ${expCount} expansion maps`)
     } catch (e: any) {
       setGraphGenMsg(`❌ ${e.message}`)
     } finally {

@@ -34,9 +34,9 @@ export interface GraphData {
 }
 
 export interface WeightParams {
-  traffic_weight:  number
-  safety_weight:   number
-  pothole_weight:  number
-  road_age_weight: number
-  turn_weight:     number
+  traffic_weight:  number   // Traffic Intensity
+  safety_weight:   number   // Safety Index (benefit — divides cost)
+  road_age_weight: number   // Road Quality (older = higher cost)
+  turn_weight:     number   // Turn Complexity
+  // pothole_weight removed — excluded from weight matrix
 }

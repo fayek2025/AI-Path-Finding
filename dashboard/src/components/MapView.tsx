@@ -1,13 +1,11 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import SimpleMapScreenshoter from 'leaflet-simple-map-screenshoter'
 import type { AlgorithmRecord } from '../types'
 
 const COLORS: Record<string, string> = {
   'BFS': '#1f77b4', 'DFS': '#9467bd', 'IDS': '#17becf',
   'UCS': '#2ca02c', 'A*': '#d62728', 'Greedy': '#ff7f0e',
-  'IDA*': '#e377c2', 'Bidirectional A*': '#bcbd22',
 }
 
 interface ChosenNode { id: number; lat: number; lon: number; label: string; name?: string }
@@ -43,7 +41,7 @@ const MapView = forwardRef<MapViewHandle, Props>(function MapView(
   ref
 ) {
   const mapRef           = useRef<L.Map | null>(null)
-  const screenshoterRef  = useRef<SimpleMapScreenshoter | null>(null)
+  const screenshoterRef  = useRef<any>(null)
   const pathLayersRef    = useRef<Record<string, L.LayerGroup>>({})
   const nodeLayersRef    = useRef<L.LayerGroup | null>(null)
 
@@ -96,8 +94,13 @@ const MapView = forwardRef<MapViewHandle, Props>(function MapView(
       attribution: '© OpenStreetMap contributors', maxZoom: 19,
     }).addTo(map)
 
-    // Attach screenshoter plugin (hidden button — we trigger it programmatically)
-    screenshoterRef.current = new SimpleMapScreenshoter({ hidden: true }).addTo(map)
+    // Attach screenshoter after dynamic import resolves
+    import('leaflet-simple-map-screenshoter').then(m => {
+      // The package's type definition is a namespace, not a class — cast to any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const Cls = (m.default ?? m) as any
+      screenshoterRef.current = new Cls({ hidden: true }).addTo(map)
+    })
 
     mapRef.current = map
     nodeLayersRef.current = L.layerGroup().addTo(map)
