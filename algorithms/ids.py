@@ -1,30 +1,32 @@
 import time
+from heuristic import haversine
 from models import SearchResult
 
-# IDS on a large real-world graph is impractical beyond ~30 hops.
-# We cap depth and wall-clock time to keep it responsive.
-_MAX_DEPTH   = 100
 _MAX_SECONDS = 20
 
 
-def search(G, start: int, goal: int, weight: str = None) -> SearchResult:
+def search(G, start: int, goal: int, weight: str = 'custom_weight') -> SearchResult:
     """
-    Iterative Deepening Search.
-    Optimal for hop count (same as BFS) but uses O(depth) memory like DFS.
-    Capped at depth=35 and 20 s wall-clock to stay practical on large graphs.
+    Iterative Deepening A* (IDA*-style IDS).
+    Uses f(n) = g(n) + h(n) as the threshold instead of raw depth.
+    This makes IDS heuristic-guided: it only explores nodes whose
+    estimated total cost is within the current threshold, pruning
+    branches that can't possibly beat it.
     """
     if start == goal:
         return SearchResult(path=[start], nodes_expanded=0)
 
+    threshold = haversine(G, start, goal)
     total_expanded = 0
     deadline = time.time() + _MAX_SECONDS
 
-    for depth in range(1, _MAX_DEPTH + 1):
+    while True:
         if time.time() > deadline:
-            print(f"  [IDS] time limit reached at depth {depth}, returning no path.")
             return SearchResult(path=[], nodes_expanded=total_expanded)
 
-        result, expanded = _depth_limited_search(G, start, goal, depth, deadline)
+        result, expanded, next_threshold = _search(
+            G, start, goal, weight, threshold, deadline
+        )
         total_expanded += expanded
 
         if result is not None:
@@ -35,35 +37,55 @@ def search(G, start: int, goal: int, weight: str = None) -> SearchResult:
                 parent_map=result['parent_map'],
             )
 
-    return SearchResult(path=[], nodes_expanded=total_expanded)
+        if next_threshold == float('inf'):
+            # No path exists
+            return SearchResult(path=[], nodes_expanded=total_expanded)
+
+        threshold = next_threshold
 
 
-def _depth_limited_search(G, start: int, goal: int, limit: int, deadline: float):
-    expansion_log  = []
-    parent_map     = {}
+def _search(G, start, goal, weight, threshold, deadline):
+    expansion_log = []
+    parent_map = {}
     nodes_expanded = [0]
 
-    def dls(node, path, depth):
+    def dfs(node, g, path):
         if time.time() > deadline:
-            return None
+            return None, float('inf')
+
+        f = g + haversine(G, node, goal)
+        if f > threshold:
+            return None, f  # prune — return f as candidate for next threshold
+
         nodes_expanded[0] += 1
         expansion_log.append(node)
 
         if node == goal:
-            return path
-        if depth == 0:
-            return None
+            return path, 0
 
-        for neighbor in G.successors(node):
-            if neighbor not in path:          # avoid cycles within current path
-                parent_map[neighbor] = node
-                result = dls(neighbor, path + [neighbor], depth - 1)
-                if result is not None:
-                    return result
-        return None
+        min_next = float('inf')
+        # Sort neighbors by f = g + edge + h so promising ones explored first
+        neighbors = sorted(
+            G.successors(node),
+            key=lambda nb: (
+                g + min(d.get(weight, 1.0) for d in G[node][nb].values())
+                + haversine(G, nb, goal)
+            )
+        )
+        for neighbor in neighbors:
+            if neighbor in path:  # avoid cycles
+                continue
+            edge_cost = min(d.get(weight, 1.0) for d in G[node][neighbor].values())
+            parent_map[neighbor] = node
+            result, t = dfs(neighbor, g + edge_cost, path + [neighbor])
+            if result is not None:
+                return result, 0
+            min_next = min(min_next, t)
 
-    path = dls(start, [start], limit)
+        return None, min_next
+
+    path, next_t = dfs(start, 0.0, [start])
     if path is not None:
         return {'path': path, 'expansion_log': expansion_log,
-                'parent_map': parent_map}, nodes_expanded[0]
-    return None, nodes_expanded[0]
+                'parent_map': parent_map}, nodes_expanded[0], 0
+    return None, nodes_expanded[0], next_t

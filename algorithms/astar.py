@@ -4,20 +4,14 @@ from heuristic import haversine
 
 
 def search(G, start: int, goal: int, weight: str = 'custom_weight') -> SearchResult:
-    """
-    A* Search.
-    Expands nodes by f(n) = g(n) + h(n).
-      g(n) = cumulative custom_weight from start to n
-      h(n) = haversine distance from n to goal (admissible, consistent)
-    Optimal and complete for non-negative weights with an admissible heuristic.
-    """
+    """A* Search. f(n) = g(n) + h(n). Optimal with admissible heuristic."""
     if start == goal:
         return SearchResult(path=[start], nodes_expanded=0)
 
     counter = 0
     h_start = haversine(G, start, goal)
-    heap = [(h_start, counter, 0.0, start, [start])]  # (f, tie, g, node, path)
-    best_g = {}           # node -> best g(n) found so far
+    heap = [(h_start, counter, 0.0, start, [start])]
+    best_g = {}
     parent_map = {}
     expansion_log = []
     nodes_expanded = 0
@@ -32,12 +26,8 @@ def search(G, start: int, goal: int, weight: str = 'custom_weight') -> SearchRes
         expansion_log.append(node)
 
         if node == goal:
-            return SearchResult(
-                path=path,
-                nodes_expanded=nodes_expanded,
-                expansion_log=expansion_log,
-                parent_map=parent_map,
-            )
+            return SearchResult(path=path, nodes_expanded=nodes_expanded,
+                                expansion_log=expansion_log, parent_map=parent_map)
 
         for neighbor in G.successors(node):
             edge_data = G[node][neighbor]

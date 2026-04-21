@@ -15,9 +15,9 @@ import algorithms.idastar as idastar
 import algorithms.bidirectional_astar as bi_astar
 
 ALGORITHMS = [
-    ('BFS',               bfs,      None),
-    ('DFS',               dfs,      None),
-    ('IDS',               ids,      None),
+    ('BFS',               bfs,      'custom_weight'),
+    ('DFS',               dfs,      'custom_weight'),
+    ('IDS',               ids,      'custom_weight'),
     ('UCS',               ucs,      'custom_weight'),
     ('A*',                astar,    'custom_weight'),
     ('Greedy',            greedy,   'custom_weight'),
@@ -31,8 +31,13 @@ def run_all(G: nx.MultiDiGraph, start: int, goal: int,
     """
     Run all 8 algorithms directly on G (already a small custom graph).
     If waypoints provided, stitches segment results together.
+    Marks each record as optimal if its cost matches the true shortest path cost.
     """
     stops = [start] + (waypoints or []) + [goal]
+
+    # Compute true optimal cost via NetworkX for ground truth
+    true_optimal = _compute_true_optimal(G, stops)
+
     records = []
 
     for name, module, weight in ALGORITHMS:
@@ -62,6 +67,15 @@ def run_all(G: nx.MultiDiGraph, start: int, goal: int,
                 parent_map=full_parents,
             )
             record = build_comparison_record(name, merged, G)
+
+            # Dynamically mark optimal: matches true shortest path cost
+            cost = record['path_cost']
+            record['is_optimal'] = bool(
+                cost is not None and
+                true_optimal is not None and
+                abs(cost - true_optimal) < 1e-4
+            )
+
             status = (f"{record['hop_count']} hops, "
                       f"cost={record['path_cost']}, "
                       f"expanded={record['nodes_expanded']}")
@@ -70,11 +84,37 @@ def run_all(G: nx.MultiDiGraph, start: int, goal: int,
             merged = SearchResult(path=[], nodes_expanded=0)
             record = build_comparison_record(name, merged, G)
             record['error'] = str(e)
+            record['is_optimal'] = False
             status = f"ERROR: {e}"
 
-        records.append(record)
-        print(status)
+        records.append(_sanitize(record))
     return records
+
+
+def _sanitize(record: dict) -> dict:
+    """Convert numpy scalars to native Python types for JSON serialization."""
+    import numpy as np
+    result = {}
+    for k, v in record.items():
+        if isinstance(v, np.integer):
+            result[k] = int(v)
+        elif isinstance(v, np.floating):
+            result[k] = float(v)
+        elif isinstance(v, np.bool_):
+            result[k] = bool(v)
+        elif isinstance(v, list):
+            result[k] = [int(x) if isinstance(x, np.integer) else x for x in v]
+        else:
+            result[k] = v
+    return result
+
+
+def _compute_true_optimal(G: nx.MultiDiGraph, stops: list) -> float | None:
+    """Compute true optimal cost: direct START→GOAL shortest path, ignoring intermediate nodes."""
+    try:
+        return round(nx.shortest_path_length(G, stops[0], stops[-1], weight='custom_weight'), 4)
+    except Exception:
+        return None
 
 
 def export_json(records: list, filepath: str = 'results.json') -> None:

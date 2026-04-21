@@ -442,6 +442,17 @@ def build_custom_graph(nodes: list, seed: int = 42) -> nx.MultiDiGraph:
 
 # ── Node name lookup ──────────────────────────────────────────────────────────
 
+def _save_graph_state(G: nx.MultiDiGraph, nodes: list, start: int, goal: int, geocache: dict):
+    """Save graph + geocache to disk so the React dashboard / API can load it."""
+    import pickle
+    os.makedirs('cache', exist_ok=True)
+    with open('cache/app_state.pkl', 'wb') as f:
+        pickle.dump({'graph': G, 'nodes': nodes, 'start': start, 'goal': goal}, f)
+    with open('cache/geocache.json', 'w') as f:
+        json.dump({str(k): v for k, v in geocache.items()}, f, indent=2)
+    print("  Graph state saved to cache/")
+
+
 def _get_node_name(nid: int, lat: float, lon: float) -> str:
     """
     Reverse-geocode a node to get its street/place name via Nominatim.
@@ -469,28 +480,26 @@ def _get_node_name(nid: int, lat: float, lon: float) -> str:
 
 def _geocode_all_nodes(G: nx.MultiDiGraph, chosen_nodes: list) -> dict:
     """
-    Reverse-geocode every node in G.
-    Chosen nodes get their label prepended (e.g. 'START: Nilkhet Rd').
-    Intermediate nodes get just the street name.
+    Reverse-geocode ONLY the chosen nodes (START/GOAL/intermediates).
+    All other graph nodes get coordinate-based fallback names.
     Returns {node_id: display_name}.
     """
     import time
     chosen_ids = {n['id']: n['label'] for n in chosen_nodes}
     names = {}
-    total = G.number_of_nodes()
-    print(f"  Geocoding {total} nodes (this may take ~{total//5}s)...", end='', flush=True)
 
-    for i, (nid, data) in enumerate(G.nodes(data=True)):
-        lat = data.get('y', 0)
-        lon = data.get('x', 0)
-        name = _get_node_name(nid, lat, lon)
-        if nid in chosen_ids:
-            names[nid] = f"{chosen_ids[nid]}: {name}"
-        else:
-            names[nid] = name
-        if (i + 1) % 10 == 0:
-            print('.', end='', flush=True)
-        time.sleep(0.15)   # Nominatim rate limit: max 1 req/s
+    print(f"  Geocoding {len(chosen_nodes)} chosen nodes...", end='', flush=True)
+    for i, node in enumerate(chosen_nodes):
+        nid = node['id']
+        name = _get_node_name(nid, node['lat'], node['lon'])
+        names[nid] = f"{chosen_ids[nid]}: {name}"
+        print('.', end='', flush=True)
+        time.sleep(0.2)
+
+    # Fallback: coord string for every other node in the graph
+    for nid, data in G.nodes(data=True):
+        if nid not in names:
+            names[nid] = f"{data.get('y', 0):.4f},{data.get('x', 0):.4f}"
 
     print(' done.')
     return names
@@ -1066,9 +1075,13 @@ def main():
     # Comparison bar chart
     plot_comparison(records)
 
-    # Build interactive dashboard
-    print("\nStep 5: Geocoding nodes and building dashboard...")
+    # Step 5: Geocode chosen nodes only + save state for React dashboard
+    print("\nStep 5: Geocoding nodes and saving state...")
     node_names = _geocode_all_nodes(G, nodes)
+    _save_graph_state(G, nodes, start, goal, node_names)
+    print("  → Run 'python api.py' then 'cd dashboard && npm run dev' for the React dashboard")
+
+    # Build legacy HTML dashboard (optional)
     build_dashboard(G, records, nodes, start, goal, node_names)
 
 
